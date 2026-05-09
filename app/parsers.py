@@ -1,0 +1,224 @@
+"""解析平台报表附件 — 第一版只支持天猫 POWKONG 旗舰店格式."""
+import io
+import csv
+import datetime
+from collections import Counter, defaultdict
+import openpyxl
+import xlrd
+
+
+def _is_apr(d, year_month: str) -> bool:
+    """判断日期是否在指定 YYYY-MM."""
+    if d is None:
+        return False
+    if isinstance(d, datetime.datetime):
+        return d.strftime("%Y-%m") == year_month
+    return year_month in str(d)
+
+
+# ===== 天猫订单明细 =====
+def parse_tmall_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
+    """解析天猫订单明细 xlsx → (rows, sku_set)."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if not all_rows:
+        return [], set()
+    header = all_rows[0]
+    col = {h: i for i, h in enumerate(header)}
+    out = []
+    sku_set = set()
+    for r in all_rows[1:]:
+        pay = r[col.get("订单付款时间", -1)] if "订单付款时间" in col else None
+        create = r[col.get("订单创建时间", -1)] if "订单创建时间" in col else None
+        t = pay or create
+        if not t or year_month not in str(t):
+            continue
+        sku = r[col.get("商家编码", -1)] or ""
+        if sku:
+            sku_set.add(sku)
+        out.append({
+            "main_oid": r[col.get("主订单编号", -1)] or "",
+            "sub_oid": r[col.get("子订单编号", -1)] or "",
+            "create_t": str(create or ""),
+            "pay_t": str(t),
+            "sku": sku,
+            "title": r[col.get("商品标题", -1)] or "",
+            "attr": r[col.get("商品属性", -1)] or "",
+            "qty": r[col.get("购买数量", -1)] or 0,
+            "price": r[col.get("商品价格", -1)] or 0,
+            "paid": r[col.get("买家实付金额", -1)] or 0,
+            "tracking": r[col.get("物流单号", -1)] or "",
+            "status": r[col.get("订单状态", -1)] or "",
+            "refund_status": r[col.get("退款状态", -1)] or "",
+        })
+    wb.close()
+    return out, sku_set
+
+
+# ===== 天猫退款明细 =====
+def parse_tmall_refunds(buf: bytes) -> list[dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if not all_rows:
+        return []
+    header = all_rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    for r in all_rows[1:]:
+        out.append({
+            "refund_id": r[col.get("退款编号", -1)] or "",
+            "main_oid": r[col.get("订单编号", -1)] or "",
+            "sku": r[col.get("商家编码", -1)] or "",
+            "title": r[col.get("宝贝标题", -1)] or "",
+            "complete_t": str(r[col.get("退款完结时间", -1)] or ""),
+            "amount": r[col.get("退款总额", -1)] or 0,
+            "type": r[col.get("售后类型", -1)] or "",
+            "reason": r[col.get("买家退款原因", -1)] or "",
+            "to_buyer": r[col.get("退给买家金额", -1)] or 0,
+            "to_platform": r[col.get("退给平台金额", -1)] or 0,
+        })
+    wb.close()
+    return out
+
+
+# ===== 天猫平台费用 (单文件，月度汇总粒度) =====
+def parse_tmall_platform_fee(buf: bytes, source_name: str) -> list[dict]:
+    """每个文件 1 行汇总。第 2 列=业务大类(费用类型)，扣费金额列名各异。"""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if len(all_rows) < 2:
+        return []
+    header = all_rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    # 扣费金额可能叫 "扣费金额合计 (元）" / "金额" / "支出金额合计（元）" 等，按优先级取
+    amt_keys = ["扣费金额合计 (元）", "扣费金额合计(元)", "金额", "支出金额合计（元）", "本月付款"]
+    amt_col = None
+    for k in amt_keys:
+        if k in col:
+            amt_col = col[k]
+            break
+    fee_type_col = col.get("业务大类", 1)
+    out = []
+    for r in all_rows[1:]:
+        if not r[0]:
+            continue
+        out.append({
+            "fee_type": r[fee_type_col] or "",
+            "amount": float(r[amt_col]) if amt_col is not None and r[amt_col] else 0,
+            "source": source_name,
+        })
+    wb.close()
+    return out
+
+
+# ===== 天猫推广明细 csv (GBK 编码) =====
+def parse_tmall_ads(buf: bytes) -> list[dict]:
+    text = buf.decode("gbk", errors="ignore")
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header)}
+    out = []
+    for r in rows[1:]:
+        if not r or not r[0]:
+            continue
+        out.append({
+            "date": r[col.get("日期", 0)],
+            "channel_id": r[col.get("场景ID", 1)] if "场景ID" in col else "",
+            "channel_name": r[col.get("场景名字", 2)] if "场景名字" in col else "",
+            "spend": float(r[col.get("花费", -1)] or 0) if "花费" in col else 0,
+            "sales": float(r[col.get("总成交金额", -1)] or 0) if "总成交金额" in col else 0,
+            "orders": int(float(r[col.get("总成交笔数", -1)] or 0)) if "总成交笔数" in col else 0,
+        })
+    return out
+
+
+# ===== 顺丰月结账单 xlsx (账单明细 sheet) =====
+def parse_sf_logistics(buf: bytes, year_month: str) -> list[dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    if "账单明细" not in wb.sheetnames:
+        wb.close()
+        return []
+    ws = wb["账单明细"]
+    rows = list(ws.iter_rows(values_only=True))
+    out = []
+    # r0=合并标题, r1=表头, r2+ 数据
+    for r in rows[2:]:
+        if not r[0]:
+            continue
+        # 顺丰日期格式 "04-01"，需结合 year_month 推年
+        date_str = str(r[1]) if r[1] else ""
+        if not date_str.startswith(year_month[5:]):  # "04" 月份过滤
+            continue
+        out.append({
+            "carrier": "顺丰",
+            "tracking": str(r[2] or "").strip(),
+            "date": f"{year_month[:4]}-{date_str}",
+            "from": r[3] or "",
+            "to": r[4] or "",
+            "weight": float(r[6] or 0),
+            "amount": float(r[11] or 0),
+            "discount": float(r[10] or 0),
+            "service_type": r[7] or "",
+            "operator": r[12] or "",
+        })
+    wb.close()
+    return out
+
+
+# ===== 中通月结账单 xlsx =====
+def parse_zt_logistics(buf: bytes, year_month: str) -> list[dict]:
+    """中通: Sheet1 主账单, 列: 账单日期/运单号/结算重量/金额/.../合计/目的省/目的市/运单发放/结算对象."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), read_only=True, data_only=True)
+    ws = wb.active
+    out = []
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        if not r[0]:
+            continue
+        if not _is_apr(r[0], year_month):
+            continue
+        out.append({
+            "carrier": "中通",
+            "tracking": str(r[1] or "").strip(),
+            "date": str(r[0])[:10] if r[0] else "",
+            "from": "",
+            "to": r[6] or "",
+            "weight": float(r[2] or 0),
+            "amount": float(r[5] or 0),  # 合计
+            "discount": 0,
+            "service_type": "",
+            "operator": r[8] or "",  # 运单发放
+        })
+    wb.close()
+    return out
+
+
+# ===== 解析分发器 (按文件名/平台路由) =====
+def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str) -> dict:
+    """根据 kind_hint (订单/退款/平台费/广告/物流) 调用对应解析器.
+    返回 {"kind": ..., "data": [...]} 或 {"kind": "error", "msg": ...}.
+    """
+    fn = filename.lower()
+    try:
+        if kind_hint == "订单":
+            data, skus = parse_tmall_orders(buf, year_month)
+            return {"kind": "订单", "data": data, "sku_set": list(skus)}
+        if kind_hint == "退款":
+            return {"kind": "退款", "data": parse_tmall_refunds(buf)}
+        if kind_hint == "平台费":
+            return {"kind": "平台费", "data": parse_tmall_platform_fee(buf, filename)}
+        if kind_hint == "广告":
+            return {"kind": "广告", "data": parse_tmall_ads(buf)}
+        if kind_hint == "物流":
+            if "顺丰" in filename or "sf" in fn:
+                return {"kind": "物流", "data": parse_sf_logistics(buf, year_month)}
+            if "中通" in filename or "zt" in fn:
+                return {"kind": "物流", "data": parse_zt_logistics(buf, year_month)}
+            return {"kind": "error", "msg": f"未识别快递公司: {filename}"}
+        return {"kind": "error", "msg": f"未知 kind_hint: {kind_hint}"}
+    except Exception as e:
+        return {"kind": "error", "msg": f"解析 {filename} 失败: {type(e).__name__}: {e}"}
