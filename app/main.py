@@ -4,7 +4,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-app = FastAPI(title="domestic-ecom-profit", version="0.1.0")
+app = FastAPI(title="domestic-ecom-profit", version="0.2.0")
 
 
 class RunRequest(BaseModel):
