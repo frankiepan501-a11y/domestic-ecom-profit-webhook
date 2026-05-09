@@ -299,6 +299,108 @@ def parse_dy_platform_fee(buf: bytes, source_name: str) -> list[dict]:
     return out
 
 
+# ===== 小红书 =====
+def parse_xhs_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
+    """小红书千帆 75 列订单. 商家编码在 col 69 (按表头查)."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], set()
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    sku_set = set()
+    for r in rows[1:]:
+        if not r[0]:
+            continue
+        pay_t = str(r[col.get("支付时间", -1)] or "")
+        create_t = str(r[col.get("订单创建时间", -1)] or "")
+        t = pay_t or create_t
+        if year_month not in t:
+            continue
+        sku = str(r[col.get("商家编码", -1)] or "").strip()
+        if sku:
+            sku_set.add(sku)
+        out.append({
+            "main_oid": r[col.get("订单号", -1)] or "",
+            "sub_oid": "",
+            "create_t": create_t,
+            "pay_t": pay_t,
+            "sku": sku,
+            "title": r[col.get("商品名称", -1)] or "",
+            "attr": r[col.get("SKU规格", -1)] or "",
+            "qty": r[col.get("SKU件数", -1)] or 0,
+            "price": r[col.get("商品总价(元)", -1)] or 0,
+            "paid": r[col.get("商家应收金额(元)（支付金额）", -1)] or 0,
+            "tracking": str(r[col.get("快递单号", -1)] or "").strip(),
+            "status": r[col.get("订单状态", -1)] or "",
+            "refund_status": r[col.get("售后状态", -1)] or "",
+        })
+    wb.close()
+    return out, sku_set
+
+
+def parse_xhs_refunds(buf: bytes) -> list[dict]:
+    """小红书退款 — 注意无"商家编码"字段, sku 先留空, P5 后做 main_oid → sku join."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    for r in rows[1:]:
+        if not r[0]:
+            continue
+        out.append({
+            "refund_id": r[col.get("售后单号", -1)] or "",
+            "main_oid": r[col.get("订单号", -1)] or "",
+            "sku": "",  # 小红书退款表无商家编码
+            "title": r[col.get("商品名称", -1)] or "",
+            "complete_t": str(r[col.get("商家确认收货时间", -1)] or r[col.get("退货创建时间", -1)] or ""),
+            "amount": r[col.get("申请售后金额(元)", -1)] or 0,
+            "type": r[col.get("售后类型", -1)] or "",
+            "reason": r[col.get("原因", -1)] or "",
+            "to_buyer": r[col.get("申请售后金额(元)", -1)] or 0,
+            "to_platform": 0,
+        })
+    wb.close()
+    return out
+
+
+def parse_xhs_platform_fee(buf: bytes, source_name: str) -> list[dict]:
+    """小红书平台结算: 创建时间/交易类型描述/收入/支出/账户余额/业务单号. 只算支出列."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
+        return []
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    for r in rows[1:]:
+        if not r[0]:
+            continue
+        spend = r[col.get("支出（元）", -1)]
+        if not spend:
+            continue
+        try:
+            amount = float(spend)
+        except (ValueError, TypeError):
+            continue
+        if amount <= 0:
+            continue
+        out.append({
+            "fee_type": r[col.get("交易类型描述", -1)] or "其他",
+            "amount": amount,
+            "source": source_name,
+        })
+    wb.close()
+    return out
+
+
 # ===== 解析分发器 (按平台 + kind 路由) =====
 def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
                      platform: str = "天猫") -> dict:
@@ -334,8 +436,18 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
             if kind_hint == "平台费":
                 return {"kind": "平台费", "data": parse_dy_platform_fee(buf, filename)}
             if kind_hint == "广告":
-                return {"kind": "广告", "data": []}  # 抖音可能无广告附件
-        # 小红书/京东 留给 P4/P5
-        return {"kind": "error", "msg": f"v0.2 P3 暂不支持 {platform}/{kind_hint}"}
+                return {"kind": "广告", "data": []}
+        elif platform == "小红书":
+            if kind_hint == "订单":
+                data, skus = parse_xhs_orders(buf, year_month)
+                return {"kind": "订单", "data": data, "sku_set": list(skus)}
+            if kind_hint == "退款":
+                return {"kind": "退款", "data": parse_xhs_refunds(buf)}
+            if kind_hint == "平台费":
+                return {"kind": "平台费", "data": parse_xhs_platform_fee(buf, filename)}
+            if kind_hint == "广告":
+                return {"kind": "广告", "data": []}
+        # 京东 留给 P5
+        return {"kind": "error", "msg": f"v0.2 暂不支持 {platform}/{kind_hint}"}
     except Exception as e:
         return {"kind": "error", "msg": f"解析 {filename} ({platform}/{kind_hint}): {type(e).__name__}: {e}"}

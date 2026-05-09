@@ -12,11 +12,13 @@ from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing
 
 
-# v0.2 P3: 加抖音纷岚店. P4 加小红书 / P5 加京东
+# v0.2 P4: 加小红书纷岚 + 宝空. P5 加京东
 V02_SHOP_WHITELIST = {
     ("天猫", "POWKONG旗舰店"),
     ("天猫", "纷岚店"),
     ("抖音", "纷岚店"),
+    ("小红书", "纷岚店"),
+    ("小红书", "宝空店"),
 }
 
 
