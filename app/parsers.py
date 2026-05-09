@@ -197,28 +197,145 @@ def parse_zt_logistics(buf: bytes, year_month: str) -> list[dict]:
     return out
 
 
-# ===== 解析分发器 (按文件名/平台路由) =====
-def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str) -> dict:
-    """根据 kind_hint (订单/退款/平台费/广告/物流) 调用对应解析器.
-    返回 {"kind": ..., "data": [...]} 或 {"kind": "error", "msg": ...}.
-    """
+# ===== 抖音订单 =====
+def _strip_tab(v):
+    """抖音字段值常带 \\t 前缀."""
+    if v is None:
+        return ""
+    return str(v).strip().lstrip("\t").strip()
+
+
+def parse_dy_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
+    """抖音订单 xlsx. 字段: 主订单/子订单/选购商品/商品ID/商家编码/商品数量/商品金额/
+    订单提交时间/支付完成时间/订单状态/售后状态/订单类型/订单应付金额/运费/优惠/手续费/商家收入金额."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if not all_rows:
+        return [], set()
+    header = all_rows[0]
+    col = {h: i for i, h in enumerate(header)}
+    out = []
+    sku_set = set()
+    for r in all_rows[1:]:
+        if not r[0]:
+            continue
+        pay_t = _strip_tab(r[col.get("支付完成时间", -1)])
+        submit_t = _strip_tab(r[col.get("订单提交时间", -1)])
+        t = pay_t or submit_t
+        if year_month not in t:
+            continue
+        sku = _strip_tab(r[col.get("商家编码", -1)])
+        if sku:
+            sku_set.add(sku)
+        out.append({
+            "main_oid": _strip_tab(r[col.get("主订单编号", -1)]),
+            "sub_oid": _strip_tab(r[col.get("子订单编号", -1)]),
+            "create_t": submit_t,
+            "pay_t": pay_t,
+            "sku": sku,
+            "title": r[col.get("选购商品", -1)] or "",
+            "attr": "",
+            "qty": r[col.get("商品数量", -1)] or 0,
+            "price": r[col.get("商品金额", -1)] or 0,
+            "paid": r[col.get("订单应付金额", -1)] or 0,  # 优惠后实付
+            "tracking": "",  # 抖音订单表无运单号
+            "status": r[col.get("订单状态", -1)] or "",
+            "refund_status": r[col.get("售后状态", -1)] or "",
+        })
+    wb.close()
+    return out, sku_set
+
+
+def parse_dy_refunds(buf: bytes) -> list[dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    for r in rows[1:]:
+        if not r[0]:
+            continue
+        out.append({
+            "refund_id": _strip_tab(r[col.get("售后单号", -1)]),
+            "main_oid": _strip_tab(r[col.get("订单号", -1)]),
+            "sku": _strip_tab(r[col.get("商家编码", -1)]),
+            "title": r[col.get("商品名称", -1)] or "",
+            "complete_t": str(r[col.get("商家退款时间", -1)] or r[col.get("售后完结时间", -1)] or ""),
+            "amount": r[col.get("退商品金额（元）", -1)] or 0,
+            "type": r[col.get("售后类型", -1)] or "",
+            "reason": r[col.get("售后原因", -1)] or "",
+            "to_buyer": r[col.get("退商品金额（元）", -1)] or 0,
+            "to_platform": 0,
+        })
+    wb.close()
+    return out
+
+
+def parse_dy_platform_fee(buf: bytes, source_name: str) -> list[dict]:
+    """抖音平台结算 csv (utf-8-bom). 字段: 动账时间/动帐流水号/动账方向/动账金额/.../动账场景/计费类型.
+    只算"出账" (商家承担成本), "入账"是货款收入忽略."""
+    text = buf.decode("utf-8-sig", errors="ignore")
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header)}
+    out = []
+    for r in rows[1:]:
+        if not r or not r[0]:
+            continue
+        direction = r[col.get("动账方向", -1)] if "动账方向" in col else ""
+        if direction != "出账":
+            continue
+        out.append({
+            "fee_type": r[col.get("动账场景", -1)] or "其他",
+            "amount": float(r[col.get("动账金额", -1)] or 0),
+            "source": source_name,
+        })
+    return out
+
+
+# ===== 解析分发器 (按平台 + kind 路由) =====
+def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
+                     platform: str = "天猫") -> dict:
+    """按 platform + kind_hint 路由. platform: 天猫/抖音/小红书/京东.
+    返回 {"kind": ..., "data": [...]} 或 {"kind": "error", "msg": ...}."""
     fn = filename.lower()
     try:
-        if kind_hint == "订单":
-            data, skus = parse_tmall_orders(buf, year_month)
-            return {"kind": "订单", "data": data, "sku_set": list(skus)}
-        if kind_hint == "退款":
-            return {"kind": "退款", "data": parse_tmall_refunds(buf)}
-        if kind_hint == "平台费":
-            return {"kind": "平台费", "data": parse_tmall_platform_fee(buf, filename)}
-        if kind_hint == "广告":
-            return {"kind": "广告", "data": parse_tmall_ads(buf)}
+        # 物流不分平台
         if kind_hint == "物流":
             if "顺丰" in filename or "sf" in fn:
                 return {"kind": "物流", "data": parse_sf_logistics(buf, year_month)}
             if "中通" in filename or "zt" in fn:
                 return {"kind": "物流", "data": parse_zt_logistics(buf, year_month)}
             return {"kind": "error", "msg": f"未识别快递公司: {filename}"}
-        return {"kind": "error", "msg": f"未知 kind_hint: {kind_hint}"}
+
+        # 平台特定 parser
+        if platform == "天猫":
+            if kind_hint == "订单":
+                data, skus = parse_tmall_orders(buf, year_month)
+                return {"kind": "订单", "data": data, "sku_set": list(skus)}
+            if kind_hint == "退款":
+                return {"kind": "退款", "data": parse_tmall_refunds(buf)}
+            if kind_hint == "平台费":
+                return {"kind": "平台费", "data": parse_tmall_platform_fee(buf, filename)}
+            if kind_hint == "广告":
+                return {"kind": "广告", "data": parse_tmall_ads(buf)}
+        elif platform == "抖音":
+            if kind_hint == "订单":
+                data, skus = parse_dy_orders(buf, year_month)
+                return {"kind": "订单", "data": data, "sku_set": list(skus)}
+            if kind_hint == "退款":
+                return {"kind": "退款", "data": parse_dy_refunds(buf)}
+            if kind_hint == "平台费":
+                return {"kind": "平台费", "data": parse_dy_platform_fee(buf, filename)}
+            if kind_hint == "广告":
+                return {"kind": "广告", "data": []}  # 抖音可能无广告附件
+        # 小红书/京东 留给 P4/P5
+        return {"kind": "error", "msg": f"v0.2 P3 暂不支持 {platform}/{kind_hint}"}
     except Exception as e:
-        return {"kind": "error", "msg": f"解析 {filename} 失败: {type(e).__name__}: {e}"}
+        return {"kind": "error", "msg": f"解析 {filename} ({platform}/{kind_hint}): {type(e).__name__}: {e}"}

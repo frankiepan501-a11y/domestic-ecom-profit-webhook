@@ -12,11 +12,11 @@ from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing
 
 
-# v0.2 P2: 白名单 (platform, shop) — 只允许天猫两店, 复用现有天猫 parser
-# P3/4/5 后续加抖音/小红书/京东
+# v0.2 P3: 加抖音纷岚店. P4 加小红书 / P5 加京东
 V02_SHOP_WHITELIST = {
     ("天猫", "POWKONG旗舰店"),
     ("天猫", "纷岚店"),
+    ("抖音", "纷岚店"),
 }
 
 
@@ -111,7 +111,7 @@ async def collect_raw_data(year_month: str) -> dict:
                                        ("平台费","平台费用"),("广告","广告/推广")]:
                 files = await _download_attachments(rec, attach_field)
                 for fname, buf in files:
-                    res = parsers.detect_and_parse(fname, buf, year_month, kind)
+                    res = parsers.detect_and_parse(fname, buf, year_month, kind, platform=platform)
                     if res["kind"] == "error":
                         raw["errors"].append(res["msg"])
                         continue
