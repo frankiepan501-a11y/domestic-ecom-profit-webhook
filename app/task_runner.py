@@ -12,9 +12,12 @@ from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing
 
 
-# v0.2 P1: 白名单仍只 POWKONG (P2 加纷岚, P3/4/5 加其他平台)
-# 解析器目前只能识别天猫格式 → 白名单内的店铺会被解析, 否则 skipped
-V01_SHOP_WHITELIST = {"POWKONG旗舰店"}
+# v0.2 P2: 白名单 (platform, shop) — 只允许天猫两店, 复用现有天猫 parser
+# P3/4/5 后续加抖音/小红书/京东
+V02_SHOP_WHITELIST = {
+    ("天猫", "POWKONG旗舰店"),
+    ("天猫", "纷岚店"),
+}
 
 
 async def update_status(record_id: str, fields: dict):
@@ -95,12 +98,12 @@ async def collect_raw_data(year_month: str) -> dict:
             title = title[0].get("text", "")
 
         if dtype == "店铺数据":
-            if shop not in V01_SHOP_WHITELIST:
+            if (platform, shop) not in V02_SHOP_WHITELIST:
                 attach_count = sum(1 for k in ["订单明细","退款明细","平台费用","广告/推广"]
                                   if f.get(k))
                 raw["skipped_shops"].append({"title": title, "platform": platform,
                                              "shop": shop, "attachments": attach_count})
-                print(f"  ⏭ 跳过(v0.2 P1): {title} [{platform}/{shop}]")
+                print(f"  ⏭ 跳过(v0.2 P2): {title} [{platform}/{shop}]")
                 continue
             print(f"  → {title} [{platform}/{shop}]")
             raw["shop_keys"].add((platform, shop))
@@ -216,9 +219,9 @@ async def run_profit(record_id: str) -> dict:
         extra = []
         if raw.get("skipped_shops"):
             shops_txt = ", ".join(f"{s['platform']}/{s['shop']}" for s in raw["skipped_shops"])
-            extra.append(["v0.2 P1 边界 - 解析器待扩展", "提示", "多平台", shops_txt, "(店铺级)",
-                         f"v0.2 P1 仅支持天猫 POWKONG. 跳过 {len(raw['skipped_shops'])} 店铺",
-                         0, "P2 加天猫纷岚 / P3 抖音 / P4 小红书 / P5 京东"])
+            extra.append(["v0.2 P2 边界 - 解析器待扩展", "提示", "多平台", shops_txt, "(店铺级)",
+                         f"v0.2 P2 仅支持天猫(POWKONG+纷岚). 跳过 {len(raw['skipped_shops'])} 店铺",
+                         0, "P3 抖音 / P4 小红书 / P5 京东"])
         await writer.write_result_sheets(token, sm, year_month, result, extra_alerts=extra)
 
         # 5. 回填
