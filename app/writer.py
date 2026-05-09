@@ -171,7 +171,8 @@ async def write_master_sheets(token: str, sm: dict, sku_costs: dict, sku_names: 
     await _batch_write(token, sm["08_产品主数据"], prod_rows)
 
 
-async def write_result_sheets(token: str, sm: dict, year_month: str, result: dict):
+async def write_result_sheets(token: str, sm: dict, year_month: str, result: dict,
+                              extra_alerts: list | None = None):
     """写 10_毛利结果表 (含公式) + 11_店铺汇总看板 + 12_异常预警."""
     PLATFORM = "天猫"
     SHOP = "POWKONG旗舰店"
@@ -238,6 +239,8 @@ async def write_result_sheets(token: str, sm: dict, year_month: str, result: dic
                    PLATFORM, SHOP, "(店铺级)",
                    f"成交订单运单 {log_info['hit']}/{log_info['hit']+log_info['miss']} 命中月结",
                    0, "无需处理" if log_info["miss"] == 0 else "排查未匹配运单"])
+    if extra_alerts:
+        alerts.extend(extra_alerts)
     if alerts:
         await _batch_write(token, sm["12_异常预警"], alerts)
 

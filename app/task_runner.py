@@ -24,6 +24,9 @@ SKU_NAME_FALLBACK = {
     "PK02-S3A": "YM24-食人花2代（左磁吸右滑轨）+叶子数据线",
 }
 
+# v0.1 限制: 只支持天猫 POWKONG 旗舰店. 其他店铺数据保留在任务台附件, 等 v0.2 解析器扩展
+V01_SHOP_WHITELIST = {"POWKONG旗舰店"}
+
 
 async def update_status(record_id: str, fields: dict):
     """改任务台行状态 + 字段。飞书 PUT 用 field_name 作 key (不是 field_id)."""
@@ -98,10 +101,11 @@ async def _download_attachments(record: dict, kind_field: str) -> list[tuple[str
 
 
 async def collect_raw_data(year_month: str) -> dict:
-    """汇总该月所有附件解析后的 raw 数据."""
+    """汇总该月所有附件解析后的 raw 数据.
+    v0.1: 店铺白名单只允许 POWKONG 旗舰店, 其他店铺记入 skipped_shops 待 v0.2."""
     sources = await find_month_sources(year_month)
     raw = {"orders": [], "refunds": [], "plat_fees": [], "ads": [], "logistics": [],
-           "sku_set": set(), "errors": []}
+           "sku_set": set(), "errors": [], "skipped_shops": []}
 
     for rec in sources:
         f = rec["_fields_resolved"]
@@ -109,6 +113,17 @@ async def collect_raw_data(year_month: str) -> dict:
         title = f.get("任务标题")
         if isinstance(title, list) and title:
             title = title[0].get("text", "")
+
+        if dtype == "店铺数据":
+            shop = f.get("店铺")
+            if shop not in V01_SHOP_WHITELIST:
+                # v0.1 跳过 — 不解析, 但记下来
+                attach_count = sum(1 for k in ["订单明细","退款明细","平台费用","广告/推广"]
+                                  if f.get(k))
+                raw["skipped_shops"].append({"title": title, "shop": shop,
+                                             "attachments": attach_count})
+                print(f"  ⏭ 跳过(v0.1): {title} [非白名单店铺={shop}, 待 v0.2]")
+                continue
         print(f"  → 处理: {title}")
 
         if dtype == "店铺数据":
@@ -201,7 +216,15 @@ async def run_profit(record_id: str) -> dict:
         })
         await writer.write_raw_sheets(token, sm, year_month, raw)
         await writer.write_master_sheets(token, sm, sku_costs, sku_names)
-        await writer.write_result_sheets(token, sm, year_month, result)
+
+        # v0.1 边界提醒 (作为额外 alert 传给 writer)
+        extra = []
+        if raw.get("skipped_shops"):
+            shops_txt = ", ".join(s["shop"] for s in raw["skipped_shops"])
+            extra.append(["v0.1 边界 - 店铺未支持", "提示", "多平台", shops_txt, "(店铺级)",
+                         f"v0.1 仅解析 POWKONG 旗舰店. 跳过 {len(raw['skipped_shops'])} 个店铺(数据已存任务台附件,等 v0.2)",
+                         0, "v0.2 计划: 抖店/小红书/京东 parser + FUNLAB SKU 成本接领星"])
+        await writer.write_result_sheets(token, sm, year_month, result, extra_alerts=extra)
 
         # 7. 回填状态 = 已完成
         finished_ms = int(datetime.now().timestamp() * 1000)
@@ -221,13 +244,17 @@ async def run_profit(record_id: str) -> dict:
         })
 
         # 8. 推 Frankie
+        skipped_txt = ""
+        if raw.get("skipped_shops"):
+            shops = ", ".join(s["shop"] for s in raw["skipped_shops"])
+            skipped_txt = f"\n⏭ 跳过 {len(raw['skipped_shops'])} 店铺(待 v0.2): {shops}"
         await feishu.send_text(config.FRANKIE_OPEN_ID,
             f"📊 国内电商毛利报表 {year_month} 已生成\n"
             f"店铺: POWKONG旗舰店 (v0.1)\n"
             f"销售额: ¥{totals['total_paid']:.2f}\n"
             f"毛利额: ¥{gross:.2f} ({gross_rate:.1f}%)\n"
-            f"物流匹配率: {log_info['hit']}/{log_info['hit']+log_info['miss']}\n"
-            f"\n报表链接: {url}")
+            f"物流匹配率: {log_info['hit']}/{log_info['hit']+log_info['miss']}"
+            + skipped_txt + f"\n\n报表链接: {url}")
 
         return {"ok": True, "url": url, "gross": gross, "gross_rate": gross_rate}
 
