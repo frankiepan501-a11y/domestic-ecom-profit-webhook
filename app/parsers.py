@@ -516,7 +516,7 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
             return {"kind": "error", "msg": f"未识别快递公司: {filename}"}
 
         # 平台特定 parser
-        if platform == "天猫":
+        if platform in ("天猫", "淘宝"):  # 淘宝结构与天猫一致, 复用同一组 parser
             if kind_hint == "订单":
                 data, skus = parse_tmall_orders(buf, year_month)
                 return {"kind": "订单", "data": data, "sku_set": list(skus)}

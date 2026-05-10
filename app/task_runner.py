@@ -12,7 +12,7 @@ from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing
 
 
-# v0.2 P4.5: 加拼多多正方体. P5 加京东
+# v0.2 P4.6: 加淘宝正方体. P5 加京东
 V02_SHOP_WHITELIST = {
     ("天猫", "POWKONG旗舰店"),
     ("天猫", "纷岚店"),
@@ -20,6 +20,7 @@ V02_SHOP_WHITELIST = {
     ("小红书", "纷岚店"),
     ("小红书", "宝空店"),
     ("拼多多", "正方体电玩店"),
+    ("淘宝", "正方体电玩店"),  # 淘宝复用天猫 parser
 }
 
 
