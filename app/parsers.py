@@ -401,6 +401,105 @@ def parse_xhs_platform_fee(buf: bytes, source_name: str) -> list[dict]:
     return out
 
 
+# ===== 拼多多 =====
+def parse_pdd_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
+    """拼多多订单 27 列. 商家编码-规格维度 col 16."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], set()
+    header = rows[0]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    sku_set = set()
+    for r in rows[1:]:
+        if not r[0]:
+            continue
+        ship_t = r[col.get("发货时间", -1)]
+        confirm_t = r[col.get("确认收货时间", -1)]
+        deal_t = r[col.get("订单成交时间", -1)]
+        # 优先按发货时间过滤,其次按成交
+        t = str(ship_t or deal_t or confirm_t or "")
+        if year_month not in t:
+            continue
+        sku = str(r[col.get("商家编码-规格维度", -1)] or "").strip().rstrip("\t").strip()
+        if sku:
+            sku_set.add(sku)
+        # paid: 商家实收金额(已含平台补贴)
+        paid_raw = r[col.get("商家实收金额(元)", -1)]
+        try:
+            paid = float(str(paid_raw).rstrip("\t").strip()) if paid_raw not in (None, "") else 0
+        except (ValueError, TypeError):
+            paid = 0
+        qty_raw = r[col.get("商品数量(件)", -1)]
+        try:
+            qty = float(str(qty_raw).rstrip("\t").strip()) if qty_raw not in (None, "") else 0
+        except (ValueError, TypeError):
+            qty = 0
+        price_raw = r[col.get("商品总价(元)", -1)]
+        try:
+            price = float(str(price_raw).rstrip("\t").strip()) if price_raw not in (None, "") else 0
+        except (ValueError, TypeError):
+            price = 0
+        out.append({
+            "main_oid": r[col.get("订单号", -1)] or "",
+            "sub_oid": "",
+            "create_t": str(deal_t or ""),
+            "pay_t": str(ship_t or deal_t or ""),
+            "sku": sku,
+            "title": r[col.get("商品", -1)] or "",
+            "attr": r[col.get("商品规格", -1)] or "",
+            "qty": qty,
+            "price": price,
+            "paid": paid,
+            "tracking": str(r[col.get("快递单号", -1)] or "").strip().rstrip("\t").strip(),
+            "status": r[col.get("订单状态", -1)] or "",
+            "refund_status": r[col.get("售后状态", -1)] or "",
+        })
+    wb.close()
+    return out, sku_set
+
+
+def parse_pdd_platform_fee(buf: bytes, source_name: str) -> list[dict]:
+    """拼多多收入支出: 真表头在 r4. 字段: 商户订单号/发生时间/收入金额(+元)/支出金额(-元)/账务类型/备注/业务描述.
+    只取支出列 < 0 的行作为成本."""
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    # 找真表头行 (含"商户订单号")
+    header_idx = None
+    for i, r in enumerate(rows[:15]):
+        if r and r[0] == "商户订单号":
+            header_idx = i
+            break
+    if header_idx is None:
+        wb.close()
+        return []
+    header = rows[header_idx]
+    col = {h: i for i, h in enumerate(header) if h}
+    out = []
+    for r in rows[header_idx + 1:]:
+        if not r or not r[0]:
+            continue
+        spend = r[col.get("支出金额（-元）", -1)]
+        if not spend:
+            continue
+        try:
+            amount = abs(float(spend))
+        except (ValueError, TypeError):
+            continue
+        if amount <= 0:
+            continue
+        out.append({
+            "fee_type": r[col.get("账务类型", -1)] or "其他",
+            "amount": amount,
+            "source": source_name,
+        })
+    wb.close()
+    return out
+
+
 # ===== 解析分发器 (按平台 + kind 路由) =====
 def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
                      platform: str = "天猫") -> dict:
@@ -445,6 +544,16 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
                 return {"kind": "退款", "data": parse_xhs_refunds(buf)}
             if kind_hint == "平台费":
                 return {"kind": "平台费", "data": parse_xhs_platform_fee(buf, filename)}
+            if kind_hint == "广告":
+                return {"kind": "广告", "data": []}
+        elif platform == "拼多多":
+            if kind_hint == "订单":
+                data, skus = parse_pdd_orders(buf, year_month)
+                return {"kind": "订单", "data": data, "sku_set": list(skus)}
+            if kind_hint == "退款":
+                return {"kind": "退款", "data": []}  # 拼多多无独立退款表
+            if kind_hint == "平台费":
+                return {"kind": "平台费", "data": parse_pdd_platform_fee(buf, filename)}
             if kind_hint == "广告":
                 return {"kind": "广告", "data": []}
         # 京东 留给 P5
