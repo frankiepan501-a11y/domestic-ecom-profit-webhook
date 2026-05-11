@@ -12,16 +12,18 @@ from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing
 
 
-# v0.2 P5: 加京东纷岚 (退款数据 only, 4月仅 1 单已退款)
+# v0.3: 全 9 店铺 (加抖音宝空 + 京东宝空, 京东 parser 重写支持费用流水按订单聚合)
 V02_SHOP_WHITELIST = {
     ("天猫", "POWKONG旗舰店"),
     ("天猫", "纷岚店"),
     ("抖音", "纷岚店"),
+    ("抖音", "宝空店"),
     ("小红书", "纷岚店"),
     ("小红书", "宝空店"),
     ("拼多多", "正方体电玩店"),
     ("淘宝", "正方体电玩店"),
     ("京东", "京东纷岚店"),
+    ("京东", "宝空店"),
 }
 
 
@@ -133,6 +135,17 @@ async def collect_raw_data(year_month: str) -> dict:
                         raw["plat_fees"].extend(res["data"])
                     elif kind == "广告":
                         raw["ads"].extend(res["data"])
+                    # 京东特殊: "货款明细"/"订单明细" 在平台费字段, 同时也要按订单聚合
+                    if (platform == "京东" and kind == "平台费"
+                            and ("货款" in fname or "订单" in fname)):
+                        ord_res = parsers.detect_and_parse(fname, buf, year_month,
+                                                          "订单", platform=platform)
+                        if ord_res["kind"] != "error":
+                            for row in ord_res["data"]:
+                                row["platform"] = platform
+                                row["shop"] = shop
+                            raw["orders"].extend(ord_res["data"])
+                            raw["sku_set"].update(ord_res.get("sku_set", []))
         elif dtype == "物流账单":
             print(f"  → {title} (全公司池)")
             files = await _download_attachments(rec, "物流月结账单")

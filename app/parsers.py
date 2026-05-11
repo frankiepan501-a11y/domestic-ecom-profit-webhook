@@ -275,9 +275,10 @@ def parse_dy_refunds(buf: bytes) -> list[dict]:
     return out
 
 
-def parse_dy_platform_fee(buf: bytes, source_name: str) -> list[dict]:
-    """抖音平台结算 csv (utf-8-bom). 字段: 动账时间/动帐流水号/动账方向/动账金额/.../动账场景/计费类型.
-    只算"出账" (商家承担成本), "入账"是货款收入忽略."""
+def parse_dy_platform_fee(buf: bytes, source_name: str, year_month: str = "") -> list[dict]:
+    """抖音平台结算 csv. 只算"出账"且非资金转账类 + 按"动账时间" 过滤当月.
+    排除场景: 提现/充值/转账/保证金 (商家自己的资金转移, 不是平台费)."""
+    NON_FEE_SCENES = {"提现", "充值", "转账", "保证金", "保证金充值", "保证金退还"}
     text = buf.decode("utf-8-sig", errors="ignore")
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
@@ -291,8 +292,14 @@ def parse_dy_platform_fee(buf: bytes, source_name: str) -> list[dict]:
         direction = r[col.get("动账方向", -1)] if "动账方向" in col else ""
         if direction != "出账":
             continue
+        scene = r[col.get("动账场景", -1)] or ""
+        if scene in NON_FEE_SCENES:
+            continue
+        t = str(r[col.get("动账时间", -1)] or "") if "动账时间" in col else ""
+        if year_month and year_month not in t:
+            continue
         out.append({
-            "fee_type": r[col.get("动账场景", -1)] or "其他",
+            "fee_type": scene or "其他",
             "amount": float(r[col.get("动账金额", -1)] or 0),
             "source": source_name,
         })
@@ -500,28 +507,107 @@ def parse_pdd_platform_fee(buf: bytes, source_name: str) -> list[dict]:
     return out
 
 
-# ===== 京东 (v0.2.7 最小可用版) =====
-# 京东数据形态特殊:
-# - "订单明细"实际是 30 列费用流水(同 1 订单多行=多种费用项)
-# - "退款明细"是标准 47 列退款表
-# - "平台费用" csv 不是明细而是月度汇总(收入/支出总金额等)
-# v0.2.7 极简策略:
-# - 从退款表反推订单(已退款订单视为"曾发生过销售"销售=退款)
-# - 平台费从 csv 汇总行直接取"支出总金额"
-# - 暂不做 SKU 级聚合(京东"商品编号"是京东ID不是商家编码, 需要赵伟俊补 v0.3)
-def parse_jd_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
-    """京东"订单明细"实际是费用流水. 当前不解析为订单(需 v0.3 改造).
-    退款数据靠 parse_jd_refunds 提供, 销售由 jd_refunds 反推."""
-    # 从费用流水里收集 distinct 订单号(用于运单匹配预留)
-    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if len(rows) < 2:
+# ===== 京东 (v0.3 完整版) =====
+# 京东"货款明细" 是 30 列费用流水(同 1 订单多行=多种费用项):
+# 字段: 订单编号/订单状态/订单下单时间/订单完成时间/商品编号/商品名称/商品数量/
+#       扣点类型/佣金比例/费用名称/应结金额/收支方向(收入/支出)/...
+# v0.3 策略: 按"订单编号"聚合 → 收入合计=销售额, 支出合计=平台费.
+# 京东"商品编号"是京东ID不是商家编码 → SKU 标"未填" (待 v0.4 补 京东商品 ↔ ERP_SKU 映射)
+def _strip_jd(v):
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if s.startswith("'"):
+        s = s[1:]
+    return s.rstrip("\t").strip()
+
+
+def _parse_jd_flow(buf: bytes, ext: str) -> tuple[list[tuple], list[str]]:
+    """读 30 列费用流水, 返回 (rows, header). 支持 csv (utf-8-sig/gbk) 和 xlsx."""
+    if ext == "csv":
+        for enc in ("utf-8-sig", "gbk", "utf-8"):
+            try:
+                rows = list(csv.reader(io.StringIO(buf.decode(enc))))
+                if rows and "订单编号" in (rows[0][0] or ""):
+                    return rows[1:], rows[0]
+            except Exception:
+                continue
+        return [], []
+    else:
+        wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+        ws = wb.active
+        all_rows = list(ws.iter_rows(values_only=True))
         wb.close()
+        if not all_rows:
+            return [], []
+        return list(all_rows[1:]), list(all_rows[0])
+
+
+def parse_jd_orders(buf: bytes, year_month: str, ext: str = "xlsx") -> tuple[list[dict], set]:
+    """按订单号聚合 30 列费用流水: 收入行=销售, 支出行=平台费."""
+    from collections import defaultdict
+    rows, header = _parse_jd_flow(buf, ext)
+    if not header:
         return [], set()
-    wb.close()
-    # v0.2.7 不返回 order, 等 jd_refunds 来推
-    return [], set()
+    col = {h: i for i, h in enumerate(header) if h}
+    if "订单编号" not in col:
+        return [], set()
+
+    by_oid: dict = defaultdict(lambda: {"income": 0.0, "spend": 0.0,
+                                         "first": None, "qty": 0})
+    for r in rows:
+        if not r or not r[0]:
+            continue
+        oid = _strip_jd(r[col["订单编号"]])
+        if not oid:
+            continue
+        amt_raw = _strip_jd(r[col.get("应结金额", -1)])
+        try:
+            amt = float(amt_raw)
+        except (ValueError, TypeError):
+            amt = 0
+        direction = _strip_jd(r[col.get("收支方向", -1)])
+        if direction == "收入":
+            by_oid[oid]["income"] += amt
+        elif direction == "支出":
+            by_oid[oid]["spend"] += abs(amt)
+        if by_oid[oid]["first"] is None:
+            by_oid[oid]["first"] = r
+            qty_raw = _strip_jd(r[col.get("商品数量", -1)])
+            try:
+                by_oid[oid]["qty"] = float(qty_raw) if qty_raw else 0
+            except (ValueError, TypeError):
+                pass
+
+    out = []
+    sku_set = set()
+    for oid, d in by_oid.items():
+        if d["income"] <= 0:
+            continue  # 跳过纯支出订单(已退款/调账)
+        first = d["first"]
+        complete_t = _strip_jd(first[col.get("订单完成时间", -1)])
+        order_t = _strip_jd(first[col.get("订单下单时间", -1)])
+        # 按订单完成时间过滤
+        t = complete_t or order_t
+        if year_month not in t:
+            continue
+        sku = ""  # 京东商品编号 ≠ ERP_SKU, 留空待 v0.4 mapping
+        out.append({
+            "main_oid": oid,
+            "sub_oid": "",
+            "create_t": order_t,
+            "pay_t": complete_t,
+            "sku": sku,
+            "title": first[col.get("商品名称", -1)] or "",
+            "attr": "",
+            "qty": d["qty"] or 1,
+            "price": 0,
+            "paid": d["income"],  # 收入合计 = 销售额
+            "tracking": "",
+            "status": _strip_jd(first[col.get("订单状态", -1)]),
+            "refund_status": "",
+        })
+    return out, sku_set
 
 
 def parse_jd_refunds(buf: bytes) -> list[dict]:
@@ -560,26 +646,78 @@ def parse_jd_refunds(buf: bytes) -> list[dict]:
     return out
 
 
-def parse_jd_platform_fee(buf: bytes, source_name: str) -> list[dict]:
-    """京东平台费 csv 是月度汇总报告(2列: 日期/2026年4月). 取"支出总金额"."""
-    text = buf.decode("gbk", errors="ignore")
-    rows = list(csv.reader(io.StringIO(text)))
+def parse_jd_platform_fee(buf: bytes, source_name: str, ext: str = "csv",
+                          year_month: str = "") -> list[dict]:
+    """京东平台费两种格式 + 按到账时间过滤当月."""
+    out = []
+    if ext == "csv":
+        text = None
+        for enc in ("utf-8-sig", "gbk", "utf-8"):
+            try:
+                text = buf.decode(enc)
+                break
+            except Exception:
+                continue
+        if text is None:
+            return []
+        rows = list(csv.reader(io.StringIO(text)))
+        if not rows:
+            return []
+        if rows[0] and "订单编号" in (rows[0][0] or ""):
+            return _jd_flow_to_fees(rows[1:], rows[0], source_name, year_month)
+        for r in rows:
+            if not r or len(r) < 2:
+                continue
+            label = str(r[0]).strip()
+            if label == "支出总金额（元）":
+                try:
+                    amount = float(r[1])
+                    if amount > 0:
+                        out.append({"fee_type": "京东平台费支出汇总",
+                                    "amount": amount, "source": source_name})
+                except (ValueError, TypeError):
+                    pass
+        return out
+    else:
+        wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+        ws = wb.active
+        all_rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        if not all_rows:
+            return []
+        return _jd_flow_to_fees(list(all_rows[1:]), list(all_rows[0]), source_name, year_month)
+
+
+def _jd_flow_to_fees(rows, header, source_name, year_month=""):
+    col = {h: i for i, h in enumerate(header) if h}
     out = []
     for r in rows:
-        if not r or len(r) < 2:
+        if not r or not r[0]:
             continue
-        label = str(r[0]).strip()
-        if label == "支出总金额（元）":
-            try:
-                amount = float(r[1])
-                if amount > 0:
-                    out.append({
-                        "fee_type": "京东平台费支出汇总",
-                        "amount": amount,
-                        "source": source_name,
-                    })
-            except (ValueError, TypeError):
-                pass
+        direction = _strip_jd(r[col.get("收支方向", -1)])
+        if direction != "支出":
+            continue
+        # 按到账时间或账单生成时间过滤 (避免跨月费用)
+        if year_month:
+            t = _strip_jd(r[col.get("到账时间", -1)])
+            if not t:
+                t = _strip_jd(r[col.get("账单生成时间", -1)])
+            # 账单生成时间是 yyyymmdd 格式 (如 20260328), 到账时间是 yyyy-mm-dd
+            ym_compact = year_month.replace("-", "")
+            if year_month not in t and ym_compact not in t:
+                continue
+        amt_raw = _strip_jd(r[col.get("应结金额", -1)])
+        try:
+            amt = abs(float(amt_raw))
+        except (ValueError, TypeError):
+            continue
+        if amt <= 0:
+            continue
+        out.append({
+            "fee_type": _strip_jd(r[col.get("费用名称", -1)]) or "其他",
+            "amount": amt,
+            "source": source_name,
+        })
     return out
 
 
@@ -616,7 +754,7 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
             if kind_hint == "退款":
                 return {"kind": "退款", "data": parse_dy_refunds(buf)}
             if kind_hint == "平台费":
-                return {"kind": "平台费", "data": parse_dy_platform_fee(buf, filename)}
+                return {"kind": "平台费", "data": parse_dy_platform_fee(buf, filename, year_month)}
             if kind_hint == "广告":
                 return {"kind": "广告", "data": []}
         elif platform == "小红书":
@@ -640,13 +778,15 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
             if kind_hint == "广告":
                 return {"kind": "广告", "data": []}
         elif platform == "京东":
+            ext = "csv" if fn.endswith(".csv") else "xlsx"
             if kind_hint == "订单":
-                data, skus = parse_jd_orders(buf, year_month)
+                data, skus = parse_jd_orders(buf, year_month, ext)
                 return {"kind": "订单", "data": data, "sku_set": list(skus)}
             if kind_hint == "退款":
                 return {"kind": "退款", "data": parse_jd_refunds(buf)}
             if kind_hint == "平台费":
-                return {"kind": "平台费", "data": parse_jd_platform_fee(buf, filename)}
+                return {"kind": "平台费",
+                        "data": parse_jd_platform_fee(buf, filename, ext, year_month)}
             if kind_hint == "广告":
                 return {"kind": "广告", "data": []}
         return {"kind": "error", "msg": f"v0.2.7 暂不支持 {platform}/{kind_hint}"}
