@@ -648,8 +648,7 @@ def parse_jd_refunds(buf: bytes) -> list[dict]:
 
 def parse_jd_platform_fee(buf: bytes, source_name: str, ext: str = "csv",
                           year_month: str = "") -> list[dict]:
-    """京东平台费两种格式 + 按到账时间过滤当月."""
-    out = []
+    """京东平台费. 流水(30列): 按月+排除货款/提现/保证金. 汇总csv: 跳过(避免与流水重复算)."""
     if ext == "csv":
         text = None
         for enc in ("utf-8-sig", "gbk", "utf-8"):
@@ -665,19 +664,8 @@ def parse_jd_platform_fee(buf: bytes, source_name: str, ext: str = "csv",
             return []
         if rows[0] and "订单编号" in (rows[0][0] or ""):
             return _jd_flow_to_fees(rows[1:], rows[0], source_name, year_month)
-        for r in rows:
-            if not r or len(r) < 2:
-                continue
-            label = str(r[0]).strip()
-            if label == "支出总金额（元）":
-                try:
-                    amount = float(r[1])
-                    if amount > 0:
-                        out.append({"fee_type": "京东平台费支出汇总",
-                                    "amount": amount, "source": source_name})
-                except (ValueError, TypeError):
-                    pass
-        return out
+        # 汇总 csv 跳过 (避免与货款明细重复). 京东必须上传货款明细才能算平台费.
+        return []
     else:
         wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
         ws = wb.active
@@ -686,6 +674,10 @@ def parse_jd_platform_fee(buf: bytes, source_name: str, ext: str = "csv",
         if not all_rows:
             return []
         return _jd_flow_to_fees(list(all_rows[1:]), list(all_rows[0]), source_name, year_month)
+
+
+# 京东"支出"中的非平台费类型 (资金转移/货款本体)
+JD_NON_FEE_NAMES = {"货款", "提现", "保证金", "保证金充值", "保证金退还", "充值", "转账"}
 
 
 def _jd_flow_to_fees(rows, header, source_name, year_month=""):
@@ -697,12 +689,13 @@ def _jd_flow_to_fees(rows, header, source_name, year_month=""):
         direction = _strip_jd(r[col.get("收支方向", -1)])
         if direction != "支出":
             continue
-        # 按到账时间或账单生成时间过滤 (避免跨月费用)
+        fee_name = _strip_jd(r[col.get("费用名称", -1)])
+        if fee_name in JD_NON_FEE_NAMES:
+            continue
         if year_month:
             t = _strip_jd(r[col.get("到账时间", -1)])
             if not t:
                 t = _strip_jd(r[col.get("账单生成时间", -1)])
-            # 账单生成时间是 yyyymmdd 格式 (如 20260328), 到账时间是 yyyy-mm-dd
             ym_compact = year_month.replace("-", "")
             if year_month not in t and ym_compact not in t:
                 continue
@@ -714,7 +707,7 @@ def _jd_flow_to_fees(rows, header, source_name, year_month=""):
         if amt <= 0:
             continue
         out.append({
-            "fee_type": _strip_jd(r[col.get("费用名称", -1)]) or "其他",
+            "fee_type": fee_name or "其他",
             "amount": amt,
             "source": source_name,
         })
