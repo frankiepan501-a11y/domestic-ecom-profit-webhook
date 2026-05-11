@@ -177,6 +177,47 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
         st["log_amt"] += d["log_amt"]
         st["sku_count"] += 1
 
+    # === v0.4 orphan 处理: 无销售但有退款/平台费/广告的店铺也要进 shop_totals ===
+    # 收集所有 (platform, shop) 组合的 refund/plat_fee/ad
+    orphan_candidates: dict = defaultdict(lambda: {
+        "refund_amt": 0.0, "refund_qty": 0, "plat": 0.0, "ad": 0.0
+    })
+    for r in refunds:
+        sk = (r["platform"], r["shop"])
+        orphan_candidates[sk]["refund_amt"] += float(r.get("amount") or 0)
+        orphan_candidates[sk]["refund_qty"] += 1
+    for f in plat_fees:
+        sk = (f["platform"], f["shop"])
+        orphan_candidates[sk]["plat"] += float(f.get("amount") or 0)
+    for a in ads:
+        sk = (a["platform"], a["shop"])
+        orphan_candidates[sk]["ad"] += float(a.get("spend") or 0)
+
+    for sk, oc in orphan_candidates.items():
+        if sk in shop_totals:
+            continue  # 已有有效订单, 已包含在 shop_totals
+        # 创建 orphan 行 (销售=0, 仅有退款/费用的损失)
+        st = shop_totals[sk]
+        st["refund_amt"] = oc["refund_amt"]
+        st["refund_qty"] = oc["refund_qty"]
+        st["plat"] = oc["plat"]
+        st["ad"] = oc["ad"]
+        # 也加 1 行虚拟 SKU 到 by_sku 让 10 表 + 11 看板能显示
+        platform, shop = sk
+        orphan_key = (platform, shop, "(无成交-orphan)")
+        result[orphan_key] = {
+            "platform": platform, "shop": shop, "sku": "(无成交-orphan)",
+            "name": "无有效订单/已退款或取消",
+            "qty": 0, "refund_qty": oc["refund_qty"], "paid": 0,
+            "refund_amt": oc["refund_amt"],
+            "plat_L": 0, "plat_M": 0, "plat_N": 0, "plat_O": 0, "plat_P": 0,
+            "plat_total": oc["plat"], "ad": oc["ad"], "cost": 0,
+            "log_amt": 0, "log_matched": 0, "log_unmatched": 0,
+            "net_sales": -oc["refund_amt"],
+            "gross": -oc["refund_amt"] - oc["plat"] - oc["ad"],
+            "gross_rate": 0,
+        }
+
     return {
         "by_sku": result,                   # {(platform,shop,sku): {...}}
         "shop_totals": dict(shop_totals),   # {(platform,shop): {...}}
