@@ -40,3 +40,9 @@ LINGXING_APP_SECRET = os.getenv("LINGXING_APP_SECRET", "IMJm0f/dwDM7YYR+2FrlEQ==
 
 # 服务鉴权 (n8n 调用时带 Bearer)
 WEBHOOK_BEARER_TOKEN = os.getenv("WEBHOOK_BEARER_TOKEN", "ecom-profit-webhook-2026")
+
+# 顺丰丰桥 API (v0.5 加, 2026-05-12)
+SF_PARTNER_ID = os.getenv("SF_PARTNER_ID", "ADEDZLPVZYMO")
+SF_CHECKWORD = os.getenv("SF_CHECKWORD", "Iwvsg9CTcpRcoSUK85uIpYsBjaR7jngY")
+SF_ENV = os.getenv("SF_ENV", "prod")  # prod / sandbox
+SF_API_ENABLED = os.getenv("SF_API_ENABLED", "true").lower() == "true"

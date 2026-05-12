@@ -9,7 +9,7 @@ import asyncio
 import json
 import traceback
 from datetime import datetime
-from . import config, feishu, parsers, engine, writer, lingxing
+from . import config, feishu, parsers, engine, writer, lingxing, sf_api
 
 
 # v0.3: 全 9 店铺 (加抖音宝空 + 京东宝空, 京东 parser 重写支持费用流水按订单聚合)
@@ -212,6 +212,31 @@ async def run_profit(record_id: str) -> dict:
             sku = o.get("sku", "")
             if sku:
                 sku_to_shops.setdefault(sku, set()).add((o["platform"], o["shop"]))
+
+        # 2.5 顺丰 API 反查运费 (v0.5 加, 2026-05-12)
+        # 策略: 从订单提取所有 SF 运单号 → 并发查 API → 与 xlsx 解析的 logistics 双路径
+        #       API 数据 source='API', xlsx 数据 source='xlsx', engine 不区分按 tracking join
+        #       同一 tracking 重复时 xlsx 在前 (parser 已加入), API 后到 → 后插入的覆盖
+        if config.SF_API_ENABLED:
+            sf_trackings = sorted({
+                str(o["tracking"]).strip()
+                for o in raw["orders"]
+                if o.get("tracking") and str(o["tracking"]).strip().startswith("SF")
+            })
+            if sf_trackings:
+                print(f"  调顺丰 API 反查 {len(sf_trackings)} 运单运费...")
+                try:
+                    sf_ok, sf_err = await sf_api.query_many(sf_trackings, concurrency=5)
+                    raw["logistics"].extend(sf_ok)
+                    print(f"  顺丰 API: {len(sf_ok)} 命中 / {len(sf_err)} 失败")
+                    if sf_err:
+                        # 头 3 条错误样本打日志
+                        for e in sf_err[:3]:
+                            print(f"    ⚠️ {e['tracking']}: {e['_error']}")
+                        raw["sf_api_errors"] = sf_err
+                except Exception as e:
+                    print(f"  ✗ 顺丰 API 整批失败: {e}, 继续走 xlsx 路径")
+                    raw["sf_api_errors"] = [{"_batch_error": str(e)}]
 
         # 3. 跑 engine
         result = engine.compute(raw["orders"], raw["refunds"], raw["plat_fees"],
