@@ -46,3 +46,22 @@ SF_PARTNER_ID = os.getenv("SF_PARTNER_ID", "ADEDZLPVZYMO")
 SF_CHECKWORD = os.getenv("SF_CHECKWORD", "Iwvsg9CTcpRcoSUK85uIpYsBjaR7jngY")
 SF_ENV = os.getenv("SF_ENV", "prod")  # prod / sandbox
 SF_API_ENABLED = os.getenv("SF_API_ENABLED", "true").lower() == "true"
+
+# ===== 月度报表自动授权 (2026-05-22 Frankie 定) =====
+# 需求: 每月新报表自动给 我/吴晓丹 + 财务/采购/物流仓储/电商运营(含子部门) 全员权限。
+# 飞书坑: tenant token 无法把"部门"直接加成 sheet 协作者(返回 1063001 Invalid parameter),
+#         故运行时实时解析部门(含子部门)当前成员 → 逐人授权。每月重跑自动同步新入职/转岗/新子部门。
+# 部门 open_department_id (聪哥1号实测拉取, 2026-05-22):
+REPORT_GRANT_DEPT_ROOTS = [
+    "od-ad59abe171a6b0a419a5e3969fb349ad",  # 财务部
+    "od-273719791eed9b0558c20e0960da991a",  # 采购部
+    "od-5f04ee41728635fa2a3f595644e8d83f",  # 物流仓储部
+    "od-9442cd1e71b6c1a3a42f503d6f4c4940",  # 电商运营部 (运行时展开含 站外/跨境/国内电商 子部门)
+]
+# 显式个人授权, 覆盖部门默认的 view: (open_id, perm). perm ∈ view/edit/full_access
+REPORT_GRANT_USERS = [
+    (FRANKIE_OPEN_ID, "full_access"),                 # 潘志聪 (Frankie)
+    ("ou_c65fc5c31c650790db623640b7ac74f7", "edit"),  # 吴晓丹 (COO)
+]
+# 部门成员默认权限
+REPORT_GRANT_DEPT_PERM = "view"

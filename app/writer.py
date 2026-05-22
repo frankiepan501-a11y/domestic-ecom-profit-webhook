@@ -44,12 +44,55 @@ def _col(n: int) -> str:
     return s
 
 
+async def _grant_report_collaborators(token: str) -> dict:
+    """给月度报表 sheet 授权: 显式个人(优先, 覆盖) + 部门成员(实时解析, view)。
+    单个失败不阻断建表。每月重跑→部门成员变动自动同步。"""
+    ok, fail, fails = 0, 0, []
+    done: set[str] = set()
+    # 1. 显式个人 (Frankie full_access / 吴晓丹 edit) — 优先级最高, 先授
+    for oid, perm in config.REPORT_GRANT_USERS:
+        try:
+            r = await feishu.perm_add_collaborator(token, "sheet", oid, perm)
+            if r.get("code") == 0:
+                ok += 1
+            else:
+                fail += 1; fails.append(f"user {oid}: {r.get('code')} {r.get('msg')}")
+        except Exception as e:
+            fail += 1; fails.append(f"user {oid}: {e}")
+        done.add(oid)
+    # 2. 部门成员 (含子部门, 实时解析) → view, 跳过已授个人
+    try:
+        members = await feishu.resolve_dept_member_openids(config.REPORT_GRANT_DEPT_ROOTS)
+    except Exception as e:
+        members = {}
+        fails.append(f"resolve depts: {e}")
+    for oid in members:
+        if oid in done:
+            continue
+        try:
+            r = await feishu.perm_add_collaborator(token, "sheet", oid,
+                                                   config.REPORT_GRANT_DEPT_PERM)
+            if r.get("code") == 0:
+                ok += 1
+            else:
+                fail += 1; fails.append(f"dept {oid}: {r.get('code')} {r.get('msg')}")
+        except Exception as e:
+            fail += 1; fails.append(f"dept {oid}: {e}")
+        done.add(oid)
+    summary = {"granted": ok, "failed": fail, "members": len(done)}
+    if fails:
+        print(f"  ⚠️ 报表授权部分失败 {summary}: {fails[:5]}")
+    else:
+        print(f"  ✓ 报表授权完成 {summary}")
+    return summary
+
+
 async def create_report_spreadsheet(year_month: str) -> tuple[str, dict[str, str]]:
     title = f"(AI)国内电商毛利表-{year_month.replace('-', '/')}"
     res = await feishu.sheets_create(title)
     token = res["data"]["spreadsheet"]["spreadsheet_token"]
 
-    await feishu.perm_add_collaborator(token, "sheet", config.FRANKIE_OPEN_ID, "full_access")
+    await _grant_report_collaborators(token)
 
     meta = await feishu.sheets_metainfo(token)
     default_sid = meta["data"]["sheets"][0]["sheetId"]

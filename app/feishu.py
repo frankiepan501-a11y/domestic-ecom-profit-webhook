@@ -132,6 +132,58 @@ async def perm_add_collaborator(token: str, doc_type: str, member_id: str, perm:
                       json={"member_type": member_type, "member_id": member_id, "perm": perm})
 
 
+# ===== Contact (部门/成员解析) =====
+async def contact_dept_children(open_department_id: str) -> list[str]:
+    """返回该部门所有子孙部门的 open_department_id (不含自己, 递归)。"""
+    out: list[str] = []
+    page_token = None
+    while True:
+        params: dict[str, Any] = {"department_id_type": "open_department_id",
+                                  "fetch_child": "true", "page_size": 50}
+        if page_token:
+            params["page_token"] = page_token
+        r = await _req("GET",
+                       f"/open-apis/contact/v3/departments/{open_department_id}/children",
+                       params=params)
+        data = r.get("data") or {}
+        out.extend(it["open_department_id"] for it in (data.get("items") or [])
+                   if it.get("open_department_id"))
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token")
+    return out
+
+
+async def contact_dept_member_openids(open_department_id: str) -> dict[str, str]:
+    """返回该部门直属成员 {open_id: name} (不含子部门)。"""
+    out: dict[str, str] = {}
+    page_token = None
+    while True:
+        params: dict[str, Any] = {"department_id": open_department_id,
+                                  "department_id_type": "open_department_id", "page_size": 50}
+        if page_token:
+            params["page_token"] = page_token
+        r = await _req("GET", "/open-apis/contact/v3/users/find_by_department", params=params)
+        data = r.get("data") or {}
+        for u in (data.get("items") or []):
+            if u.get("open_id"):
+                out[u["open_id"]] = u.get("name", "")
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token")
+    return out
+
+
+async def resolve_dept_member_openids(dept_roots: list[str]) -> dict[str, str]:
+    """展开每个根部门(含全部子孙) → 并集成员 {open_id: name}。"""
+    members: dict[str, str] = {}
+    for root in dept_roots:
+        nodes = [root] + await contact_dept_children(root)
+        for nd in nodes:
+            members.update(await contact_dept_member_openids(nd))
+    return members
+
+
 # ===== IM =====
 async def send_text(open_id: str, text: str) -> dict:
     body = {"receive_id": open_id, "msg_type": "text",
