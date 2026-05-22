@@ -65,3 +65,12 @@ REPORT_GRANT_USERS = [
 ]
 # 部门成员默认权限
 REPORT_GRANT_DEPT_PERM = "view"
+
+# ===== 报表生成通知 (2026-05-22 Frankie 定: 我 + 财务部 + 国内电商平台部) =====
+# 业务码 FIN / 优先级 P2, 标题格式遵守「飞书通知统一规范」: 🟡 [FIN·P2] {标题} · {后缀}
+# 聪哥1号不在财务部群(oc_6b2da...) → 两个部门都走"实时解析成员私聊", 不依赖 bot 入群, 自动同步新人
+NOTIFY_USERS = [FRANKIE_OPEN_ID]  # 额外固定私聊对象 (Frankie)
+NOTIFY_DEPT_ROOTS = [
+    "od-ad59abe171a6b0a419a5e3969fb349ad",  # 财务部 (吴晓丹/莫莉莉/林纯子)
+    "od-2e75af50a81b16d829e8b345f9137a49",  # 国内电商平台部 (赵伟俊)
+]

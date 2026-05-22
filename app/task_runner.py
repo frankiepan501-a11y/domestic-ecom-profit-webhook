@@ -32,6 +32,23 @@ async def update_status(record_id: str, fields: dict):
         config.TASK_APP_TOKEN, config.TASK_TABLE_ID, record_id, fields)
 
 
+async def _notify_report_ready(msg: str):
+    """报表生成通知 → Frankie + 财务部 + 国内电商平台部 成员私聊 (实时解析, 单点失败不阻断)。"""
+    targets = dict.fromkeys(config.NOTIFY_USERS)  # 保序去重
+    try:
+        targets.update(await feishu.resolve_dept_member_openids(config.NOTIFY_DEPT_ROOTS))
+    except Exception as e:
+        print(f"  ⚠️ 解析通知部门失败: {e}")
+    sent = 0
+    for oid in targets:
+        try:
+            await feishu.send_text(oid, msg)
+            sent += 1
+        except Exception as e:
+            print(f"  ⚠️ 通知 {oid} 失败: {e}")
+    print(f"  ✓ 报表通知已发 {sent}/{len(targets)} 人")
+
+
 async def get_record(record_id: str) -> dict:
     res = await feishu.bitable_get_record(
         config.TASK_APP_TOKEN, config.TASK_TABLE_ID, record_id)
@@ -288,19 +305,20 @@ async def run_profit(record_id: str) -> dict:
                        + (f" | 跳过{len(raw['skipped_shops'])}店" if raw["skipped_shops"] else "")),
         })
 
-        # 6. 推 Frankie
+        # 6. 通知 (规范化标题 🟡 [FIN·P2]) → Frankie + 财务部 + 国内电商平台部 成员私聊
         skip_txt = ""
         if raw.get("skipped_shops"):
             shops = ", ".join(s["shop"] for s in raw["skipped_shops"])
-            skip_txt = f"\n⏭ 跳过 {len(raw['skipped_shops'])} 店铺(待 v0.2 后续 phase): {shops}"
+            skip_txt = f"\n⏭ 跳过 {len(raw['skipped_shops'])} 店铺: {shops}"
 
-        await feishu.send_text(config.FRANKIE_OPEN_ID,
-            f"📊 国内电商毛利报表 {year_month} 已生成 (v0.2.0)\n"
+        msg = (
+            f"🟡 [FIN·P2] 国内电商毛利报表 · {year_month}\n"
             f"覆盖店铺: {len(raw['shop_keys'])}\n"
             f"销售额: ¥{all_paid:.2f}\n"
             f"净销售: ¥{net:.2f}\n"
             f"毛利额: ¥{all_gross:.2f} ({gross_rate:.1f}%)"
             + skip_txt + f"\n\n报表: {url}")
+        await _notify_report_ready(msg)
 
         return {"ok": True, "url": url, "gross": all_gross, "gross_rate": gross_rate}
 
