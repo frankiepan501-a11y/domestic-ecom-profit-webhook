@@ -228,6 +228,11 @@ def parse_dy_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
         sku = _strip_tab(r[col.get("商家编码", -1)])
         if sku:
             sku_set.add(sku)
+        # v0.7: 从「快递信息」列提取运单号 (格式 "SF0220481613112-顺丰速运,商品..." / "76922..-中通快递,..")
+        express = _strip_tab(r[col.get("快递信息", -1)])
+        tracking = ""
+        if express and express != "-":
+            tracking = express.split(",")[0].split("-")[0].strip()
         out.append({
             "main_oid": _strip_tab(r[col.get("主订单编号", -1)]),
             "sub_oid": _strip_tab(r[col.get("子订单编号", -1)]),
@@ -239,7 +244,7 @@ def parse_dy_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
             "qty": r[col.get("商品数量", -1)] or 0,
             "price": r[col.get("商品金额", -1)] or 0,
             "paid": r[col.get("订单应付金额", -1)] or 0,  # 优惠后实付
-            "tracking": "",  # 抖音订单表无运单号
+            "tracking": tracking,  # v0.7 从快递信息列解析
             "status": r[col.get("订单状态", -1)] or "",
             "refund_status": r[col.get("售后状态", -1)] or "",
         })
@@ -587,8 +592,8 @@ def parse_jd_orders(buf: bytes, year_month: str, ext: str = "xlsx") -> tuple[lis
         first = d["first"]
         complete_t = _strip_jd(first[col.get("订单完成时间", -1)])
         order_t = _strip_jd(first[col.get("订单下单时间", -1)])
-        # 按订单完成时间过滤
-        t = complete_t or order_t
+        # 归月口径: 按"下单时间"优先, 与其他平台(付款/支付/发货时间)对齐, 避免跨月单错位 (2026-05-28)
+        t = order_t or complete_t
         if year_month not in t:
             continue
         sku = ""  # 京东商品编号 ≠ ERP_SKU, 留空待 v0.4 mapping
