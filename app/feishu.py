@@ -63,6 +63,13 @@ async def bitable_update_record(app_token: str, table_id: str, record_id: str, f
                       json={"fields": fields})
 
 
+async def bitable_batch_create(app_token: str, table_id: str, records: list[dict]) -> dict:
+    """批量创建记录。records=[{"fields":{...}}, ...] (最多500条)。"""
+    return await _req("POST",
+                      f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create",
+                      json={"records": records})
+
+
 # ===== Drive Medias (附件下载) =====
 async def drive_download_media(file_token: str, extra: str | None = None) -> bytes:
     """下载多维表格附件。extra 是 bitable 的 extra 参数 (含 bitableId/tableId/recordId/fieldId)."""

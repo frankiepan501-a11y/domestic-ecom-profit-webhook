@@ -69,3 +69,11 @@ async def poll_and_run(authorization: str | None = Header(None)):
             asyncio.create_task(task_runner.run_profit(r["record_id"]))
             triggered.append(r["record_id"])
     return {"triggered": triggered, "count": len(triggered)}
+
+
+@app.post("/tasks/ensure-month")
+async def ensure_month(year_month: str | None = None, authorization: str | None = Header(None)):
+    """每月初建当月任务台行 (12行, 幂等)。n8n cron 每月1号调用; year_month 省略=当月。"""
+    _check_auth(authorization)
+    from . import task_seeder
+    return await task_seeder.ensure_month_rows(year_month)
