@@ -77,3 +77,11 @@ async def ensure_month(year_month: str | None = None, authorization: str | None 
     _check_auth(authorization)
     from . import task_seeder
     return await task_seeder.ensure_month_rows(year_month)
+
+
+@app.post("/tasks/remind-monthly")
+async def remind_monthly(force: bool = False, authorization: str | None = Header(None)):
+    """月初上传提醒 (3-5号窗口第一个工作日才真发)。n8n cron 每月3-5号每天调; force=true 强制发(测试)。"""
+    _check_auth(authorization)
+    from . import reminder
+    return await reminder.monthly_upload_reminder(force=force)

@@ -191,6 +191,40 @@ async def resolve_dept_member_openids(dept_roots: list[str]) -> dict[str, str]:
     return members
 
 
+async def contact_dept_members_full(open_department_id: str) -> list[dict]:
+    """部门直属成员 [{open_id, name, job_title}] (不含子部门)。"""
+    out: list[dict] = []
+    page_token = None
+    while True:
+        params: dict[str, Any] = {"department_id": open_department_id,
+                                  "department_id_type": "open_department_id", "page_size": 50}
+        if page_token:
+            params["page_token"] = page_token
+        r = await _req("GET", "/open-apis/contact/v3/users/find_by_department", params=params)
+        data = r.get("data") or {}
+        for u in (data.get("items") or []):
+            if u.get("open_id"):
+                out.append({"open_id": u["open_id"], "name": u.get("name", ""),
+                            "job_title": u.get("job_title", "")})
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token")
+    return out
+
+
+async def resolve_users_by_job_title(dept_roots: list[str], job_titles: list[str]) -> dict[str, str]:
+    """部门(含子)成员中 job_title ∈ job_titles 的 {open_id: name} (实时, 岗位换人自动跟随)。"""
+    titles = set(job_titles)
+    result: dict[str, str] = {}
+    for root in dept_roots:
+        nodes = [root] + await contact_dept_children(root)
+        for nd in nodes:
+            for u in await contact_dept_members_full(nd):
+                if u.get("job_title") in titles:
+                    result[u["open_id"]] = u["name"]
+    return result
+
+
 # ===== IM =====
 async def send_text(open_id: str, text: str) -> dict:
     body = {"receive_id": open_id, "msg_type": "text",

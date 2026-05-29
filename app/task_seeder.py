@@ -40,7 +40,11 @@ def _month_of(fields: dict) -> str:
 async def ensure_month_rows(year_month: str | None = None) -> dict:
     """幂等建当月12行。该月已有任意行则跳过 (不重复建)。"""
     if not year_month:
-        year_month = datetime.now().strftime("%Y-%m")
+        # 报表=上月销售数据次月初跑, 故每月初建「上月」行 (非当月)
+        now = datetime.now()
+        year = now.year if now.month > 1 else now.year - 1
+        month = now.month - 1 or 12
+        year_month = f"{year}-{month:02d}"
 
     existing = await feishu.bitable_search_records(config.TASK_APP_TOKEN, config.TASK_TABLE_ID)
     has = [r for r in existing if _month_of(r.get("fields", {})) == year_month]

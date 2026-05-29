@@ -74,3 +74,21 @@ NOTIFY_DEPT_ROOTS = [
     "od-ad59abe171a6b0a419a5e3969fb349ad",  # 财务部 (吴晓丹/莫莉莉/林纯子)
     "od-2e75af50a81b16d829e8b345f9137a49",  # 国内电商平台部 (赵伟俊)
 ]
+
+# ===== v0.9 (2026-05-29 Frankie 定): 按职务实时查 通知/提醒对象 =====
+# 查职务的部门范围 (含子部门): 财务部 + 国内电商平台部
+NOTIFY_JT_DEPT_ROOTS = [
+    "od-ad59abe171a6b0a419a5e3969fb349ad",  # 财务部
+    "od-2e75af50a81b16d829e8b345f9137a49",  # 国内电商平台部
+]
+# 报表生成后通知 = 这些职务 + 显式加潘志聪/吴晓丹
+REPORT_NOTIFY_JOB_TITLES = ["国内平台运营专员", "财务助理", "财务部主管"]
+REPORT_NOTIFY_EXTRA_USERS = [
+    "ou_629ce01f4bc31de078e10fcb038dbf78",  # 潘志聪 (Frankie)
+    "ou_c65fc5c31c650790db623640b7ac74f7",  # 吴晓丹 (COO)
+]
+# 月初上传提醒: 运营职务(收操作指引) / 财务职务(收监督提醒)
+REMIND_OPS_JOB_TITLES = ["国内平台运营专员"]
+REMIND_FINANCE_JOB_TITLES = ["财务助理", "财务部主管"]
+REMIND_DEADLINE_DAY = "8 号"  # 财务督促国内电商部完成的期限
+TASK_PANEL_URL = "https://u1wpma3xuhr.feishu.cn/base/IKyGb1jydaZW7msBzAicViiWngg"

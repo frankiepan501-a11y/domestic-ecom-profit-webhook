@@ -33,12 +33,15 @@ async def update_status(record_id: str, fields: dict):
 
 
 async def _notify_report_ready(msg: str):
-    """报表生成通知 → Frankie + 财务部 + 国内电商平台部 成员私聊 (实时解析, 单点失败不阻断)。"""
-    targets = dict.fromkeys(config.NOTIFY_USERS)  # 保序去重
+    """报表生成通知 → 按职务实时查(国内平台运营专员/财务助理/财务部主管) + 显式潘志聪/吴晓丹 (单点失败不阻断)。"""
+    targets: dict = {}
     try:
-        targets.update(await feishu.resolve_dept_member_openids(config.NOTIFY_DEPT_ROOTS))
+        targets.update(await feishu.resolve_users_by_job_title(
+            config.NOTIFY_JT_DEPT_ROOTS, config.REPORT_NOTIFY_JOB_TITLES))
     except Exception as e:
-        print(f"  ⚠️ 解析通知部门失败: {e}")
+        print(f"  ⚠️ 解析通知职务失败: {e}")
+    for oid in config.REPORT_NOTIFY_EXTRA_USERS:  # 显式加潘志聪/吴晓丹
+        targets.setdefault(oid, "")
     sent = 0
     for oid in targets:
         try:
@@ -317,7 +320,7 @@ async def run_profit(record_id: str) -> dict:
             f"销售额: ¥{all_paid:.2f}\n"
             f"净销售: ¥{net:.2f}\n"
             f"毛利额: ¥{all_gross:.2f} ({gross_rate:.1f}%)"
-            + skip_txt + f"\n\n报表: {url}")
+            + skip_txt + f"\n\n报表: {url}\n📌 请注意查收")
         await _notify_report_ready(msg)
 
         return {"ok": True, "url": url, "gross": all_gross, "gross_rate": gross_rate}
