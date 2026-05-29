@@ -54,14 +54,14 @@ async def monthly_upload_reminder(force: bool = False) -> dict:
 
     sent: dict = {"ops": [], "finance": []}
     try:
-        ops = await feishu.resolve_users_by_job_title(config.NOTIFY_JT_DEPT_ROOTS, config.REMIND_OPS_JOB_TITLES)
+        ops = await feishu.resolve_users_jt_fallback(config.REMIND_OPS_DEPT_ROOTS, config.REMIND_OPS_JOB_TITLES)
         for oid, name in ops.items():
             await feishu.send_text(oid, ops_msg)
             sent["ops"].append(name or oid)
     except Exception as e:
         sent["ops_error"] = str(e)
     try:
-        fin = await feishu.resolve_users_by_job_title(config.NOTIFY_JT_DEPT_ROOTS, config.REMIND_FINANCE_JOB_TITLES)
+        fin = await feishu.resolve_users_jt_fallback(config.REMIND_FINANCE_DEPT_ROOTS, config.REMIND_FINANCE_JOB_TITLES)
         for oid, name in fin.items():
             await feishu.send_text(oid, fin_msg)
             sent["finance"].append(name or oid)

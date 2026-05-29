@@ -36,7 +36,7 @@ async def _notify_report_ready(msg: str):
     """报表生成通知 → 按职务实时查(国内平台运营专员/财务助理/财务部主管) + 显式潘志聪/吴晓丹 (单点失败不阻断)。"""
     targets: dict = {}
     try:
-        targets.update(await feishu.resolve_users_by_job_title(
+        targets.update(await feishu.resolve_users_jt_fallback(
             config.NOTIFY_JT_DEPT_ROOTS, config.REPORT_NOTIFY_JOB_TITLES))
     except Exception as e:
         print(f"  ⚠️ 解析通知职务失败: {e}")

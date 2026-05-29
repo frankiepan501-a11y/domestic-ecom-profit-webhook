@@ -225,6 +225,15 @@ async def resolve_users_by_job_title(dept_roots: list[str], job_titles: list[str
     return result
 
 
+async def resolve_users_jt_fallback(dept_roots: list[str], job_titles: list[str]) -> dict[str, str]:
+    """按职务命中; 若一个都没命中(职务名称漂移/API 无 job_title) → 该范围部门全员兜底, 防漏。"""
+    r = await resolve_users_by_job_title(dept_roots, job_titles)
+    if r:
+        return r
+    print(f"  ⚠️ 职务 {job_titles} 在 {dept_roots} 命中 0 人 → 部门全员兜底")
+    return await resolve_dept_member_openids(dept_roots)
+
+
 # ===== IM =====
 async def send_text(open_id: str, text: str) -> dict:
     body = {"receive_id": open_id, "msg_type": "text",

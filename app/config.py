@@ -90,5 +90,8 @@ REPORT_NOTIFY_EXTRA_USERS = [
 # 月初上传提醒: 运营职务(收操作指引) / 财务职务(收监督提醒)
 REMIND_OPS_JOB_TITLES = ["国内平台运营专员"]
 REMIND_FINANCE_JOB_TITLES = ["财务助理", "财务部主管"]
+# 兜底部门 (职务一个都没命中时, 按各自对应部门全员补人, 不能串)
+REMIND_OPS_DEPT_ROOTS = ["od-2e75af50a81b16d829e8b345f9137a49"]      # 国内电商平台部
+REMIND_FINANCE_DEPT_ROOTS = ["od-ad59abe171a6b0a419a5e3969fb349ad"]  # 财务部
 REMIND_DEADLINE_DAY = "8 号"  # 财务督促国内电商部完成的期限
 TASK_PANEL_URL = "https://u1wpma3xuhr.feishu.cn/base/IKyGb1jydaZW7msBzAicViiWngg"
