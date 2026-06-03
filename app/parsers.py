@@ -175,23 +175,46 @@ def parse_zt_logistics(buf: bytes, year_month: str) -> list[dict]:
     """中通: Sheet1 主账单, 列: 账单日期/运单号/结算重量/金额/.../合计/目的省/目的市/运单发放/结算对象."""
     wb = openpyxl.load_workbook(io.BytesIO(buf), read_only=True, data_only=True)
     ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    try:
+        header = [str(h or "").strip() for h in next(rows)]
+    except StopIteration:
+        wb.close()
+        return []
+
+    def _idx(*names):
+        for n in names:
+            if n in header:
+                return header.index(n)
+        return -1
+
+    i_date = _idx("账单日期")
+    i_track = _idx("运单号")
+    i_wt = _idx("结算重量")
+    i_amt = _idx("合计", "金额", "应结金额", "费用合计")  # 兼容有无"合计"列
+    i_to = _idx("目的地市", "目的市")
+    i_op = _idx("运单发放")
     out = []
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        if not r[0]:
+
+    def g(r, i):
+        return r[i] if 0 <= i < len(r) else None
+
+    for r in rows:
+        if i_date < 0 or not g(r, i_date):
             continue
-        if not _is_apr(r[0], year_month):
+        if not _is_apr(r[i_date], year_month):
             continue
         out.append({
             "carrier": "中通",
-            "tracking": str(r[1] or "").strip(),
-            "date": str(r[0])[:10] if r[0] else "",
+            "tracking": str(g(r, i_track) or "").strip(),
+            "date": str(g(r, i_date))[:10] if g(r, i_date) else "",
             "from": "",
-            "to": r[6] or "",
-            "weight": float(r[2] or 0),
-            "amount": float(r[5] or 0),  # 合计
+            "to": g(r, i_to) or "",
+            "weight": float(g(r, i_wt) or 0),
+            "amount": float(g(r, i_amt) or 0),
             "discount": 0,
             "service_type": "",
-            "operator": r[8] or "",  # 运单发放
+            "operator": g(r, i_op) or "",
         })
     wb.close()
     return out
