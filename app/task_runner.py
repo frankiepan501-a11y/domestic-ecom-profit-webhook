@@ -260,7 +260,8 @@ async def run_profit(record_id: str) -> dict:
 
         # 3. 跑 engine
         result = engine.compute(raw["orders"], raw["refunds"], raw["plat_fees"],
-                                raw["ads"], raw["logistics"], sku_costs, sku_names)
+                                raw["ads"], raw["logistics"], sku_costs, sku_names,
+                                year_month=year_month)
 
         # 4. 创建新表
         token, sm = await writer.create_report_spreadsheet(year_month)

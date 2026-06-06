@@ -31,7 +31,20 @@ def _load_rows(buf: bytes, filename: str = "") -> list[tuple]:
     if head[:4] == b"\xd0\xcf\x11\xe0":  # 老 .xls (OLE2)
         wb = xlrd.open_workbook(file_contents=buf)
         s = wb.sheet_by_index(0)
-        return [tuple(s.row_values(i)) for i in range(s.nrows)]
+        out = []
+        for i in range(s.nrows):
+            row = []
+            for j in range(s.ncols):
+                c = s.cell(i, j)
+                if c.ctype == xlrd.XL_CELL_DATE:  # Excel 日期序列号 → datetime
+                    try:
+                        row.append(xlrd.xldate.xldate_as_datetime(c.value, wb.datemode))
+                    except Exception:
+                        row.append(c.value)
+                else:
+                    row.append(c.value)
+            out.append(tuple(row))
+        return out
     for enc in ("gbk", "utf-8-sig", "utf-8"):  # 其余按 CSV 文本(淘宝导出多为 gbk)
         try:
             return [tuple(r) for r in csv.reader(io.StringIO(buf.decode(enc)))]
@@ -81,6 +94,8 @@ def parse_tmall_orders(buf: bytes, year_month: str, filename: str = "") -> tuple
     i_track = _pick(col, "物流单号")
     i_status = _pick(col, "订单状态")
     i_rstatus = _pick(col, "退款状态")
+    i_payable = _pick(col, "买家应付货款")
+    i_order_refund = _pick(col, "退款金额")  # 订单表退款金额(退款总额含券), 仅天猫/淘宝有
     out = []
     sku_set = set()
 
@@ -110,6 +125,8 @@ def parse_tmall_orders(buf: bytes, year_month: str, filename: str = "") -> tuple
             "tracking": g(r, i_track) or "",
             "status": g(r, i_status) or "",
             "refund_status": g(r, i_rstatus) or "",
+            "payable": g(r, i_payable) or 0,
+            "order_refund": g(r, i_order_refund) or 0,
         })
     return out, sku_set
 
@@ -133,7 +150,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
         i_rid = _pick(col, "退款编号"); i_main = _pick(col, "订单编号")
         i_sku = _pick(col, "商家编码"); i_title = _pick(col, "宝贝标题", "商品标题")
         i_ct = _pick(col, "退款完结时间"); i_type = _pick(col, "售后类型")
-        i_reason = _pick(col, "买家退款原因")
+        i_reason = _pick(col, "买家退款原因"); i_payt = _pick(col, "订单付款时间")
         i_tb = _pick(col, "退给买家金额"); i_tp = _pick(col, "退给平台金额")
         for r in all_rows[1:]:
             out.append({
@@ -142,6 +159,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
                 "complete_t": str(g(r, i_ct) or ""), "amount": g(r, i_total) or 0,
                 "type": g(r, i_type) or "", "reason": g(r, i_reason) or "",
                 "to_buyer": g(r, i_tb) or 0, "to_platform": g(r, i_tp) or 0,
+                "pay_t": str(g(r, i_payt) or ""),
             })
         return out
     # 情形 B: 运营传的是订单明细表 → 从"退款金额">0 的行提取
@@ -150,6 +168,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
         return []
     i_sku = _pick(col, "商家编码"); i_main = _pick(col, "主订单编号", "订单编号")
     i_title = _pick(col, "商品标题", "标题"); i_rstatus = _pick(col, "退款状态")
+    i_payt = _pick(col, "订单付款时间")
     for r in all_rows[1:]:
         try:
             amt = float(g(r, i_amt) or 0)
@@ -161,6 +180,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
             "refund_id": "", "main_oid": g(r, i_main) or "", "sku": g(r, i_sku) or "",
             "title": g(r, i_title) or "", "complete_t": "", "amount": amt,
             "type": g(r, i_rstatus) or "", "reason": "", "to_buyer": amt, "to_platform": 0,
+            "pay_t": str(g(r, i_payt) or ""),
         })
     return out
 
@@ -527,10 +547,8 @@ def parse_xhs_platform_fee(buf: bytes, source_name: str) -> list[dict]:
 
 # ===== 拼多多 =====
 def parse_pdd_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
-    """拼多多订单 27 列. 商家编码-规格维度 col 16."""
-    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    """拼多多订单 27 列. 商家编码-规格维度 col 16. 按 magic 读 .xlsx/.xls/.csv."""
+    rows = _load_rows(buf)
     if not rows:
         return [], set()
     header = rows[0]
@@ -581,16 +599,13 @@ def parse_pdd_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
             "status": r[col.get("订单状态", -1)] or "",
             "refund_status": r[col.get("售后状态", -1)] or "",
         })
-    wb.close()
     return out, sku_set
 
 
 def parse_pdd_platform_fee(buf: bytes, source_name: str) -> list[dict]:
     """拼多多收入支出: 真表头在 r4. 字段: 商户订单号/发生时间/收入金额(+元)/支出金额(-元)/账务类型/备注/业务描述.
-    只取支出列 < 0 的行作为成本."""
-    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    只取支出列 < 0 的行作为成本. 按 magic 读 .xlsx/.xls/.csv."""
+    rows = _load_rows(buf)
     # 找真表头行 (含"商户订单号")
     header_idx = None
     for i, r in enumerate(rows[:15]):
@@ -598,29 +613,75 @@ def parse_pdd_platform_fee(buf: bytes, source_name: str) -> list[dict]:
             header_idx = i
             break
     if header_idx is None:
-        wb.close()
         return []
     header = rows[header_idx]
     col = {h: i for i, h in enumerate(header) if h}
+    i_spend = col.get("支出金额（-元）", -1)
+    i_type = col.get("账务类型", -1)
     out = []
+
+    def g(r, i):  # 边界安全取值 (csv 行可能比表头短)
+        return r[i] if 0 <= i < len(r) else None
+
     for r in rows[header_idx + 1:]:
         if not r or not r[0]:
             continue
-        spend = r[col.get("支出金额（-元）", -1)]
+        spend = g(r, i_spend)
         if not spend:
             continue
         try:
-            amount = abs(float(spend))
+            amount = abs(float(str(spend).strip()))
         except (ValueError, TypeError):
             continue
         if amount <= 0:
             continue
         out.append({
-            "fee_type": r[col.get("账务类型", -1)] or "其他",
+            "fee_type": g(r, i_type) or "其他",
             "amount": amount,
             "source": source_name,
         })
-    wb.close()
+    return out
+
+
+def parse_pdd_refunds(buf: bytes) -> list[dict]:
+    """拼多多退款明细. 列: 售后编号/订单编号/交易金额/售后状态/退款类型/退款金额/.../申请时间.
+    只算 售后状态=退款成功(排除 已撤销/售后单失败); 按订单编号 join 到订单。"""
+    rows = _load_rows(buf)
+    if not rows:
+        return []
+    header = rows[0]
+    col = {str(h).strip(): i for i, h in enumerate(header) if h not in (None, "")}
+    i_oid = col.get("订单编号", -1)
+    i_amt = col.get("退款金额", -1)
+    i_status = col.get("售后状态", -1)
+    i_type = col.get("退款类型", -1)
+    i_rid = col.get("售后编号", -1)
+    i_apply = col.get("申请时间", -1)
+    out = []
+
+    def g(r, i):
+        return r[i] if 0 <= i < len(r) else None
+
+    for r in rows[1:]:
+        if not r or g(r, i_oid) in (None, ""):
+            continue
+        if str(g(r, i_status) or "").strip() != "退款成功":
+            continue  # 排除 已撤销/售后单失败
+        try:
+            amt = float(str(g(r, i_amt) or 0).strip())
+        except (ValueError, TypeError):
+            amt = 0
+        if amt <= 0:
+            continue
+        out.append({
+            "refund_id": str(g(r, i_rid) or ""),
+            "main_oid": str(g(r, i_oid) or "").strip(),
+            "sku": "", "title": "",
+            "complete_t": str(g(r, i_apply) or ""),
+            "amount": amt,
+            "type": str(g(r, i_type) or ""), "reason": "",
+            "to_buyer": amt, "to_platform": 0,
+        })
     return out
 
 
@@ -882,7 +943,7 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
                 data, skus = parse_pdd_orders(buf, year_month)
                 return {"kind": "订单", "data": data, "sku_set": list(skus)}
             if kind_hint == "退款":
-                return {"kind": "退款", "data": []}  # 拼多多无独立退款表
+                return {"kind": "退款", "data": parse_pdd_refunds(buf)}
             if kind_hint == "平台费":
                 return {"kind": "平台费", "data": parse_pdd_platform_fee(buf, filename)}
             if kind_hint == "广告":

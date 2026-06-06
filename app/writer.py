@@ -257,8 +257,7 @@ async def write_result_sheets(token: str, sm: dict, year_month: str, result: dic
                 round(d["plat_O"], 2), round(d["plat_P"], 2),
                 {"type": "formula", "text": f"=L{row}+M{row}+N{row}+O{row}+P{row}"},
                 round(d["ad"], 2), round(d["refund_amt"], 2),
-                {"type": "formula",
-                 "text": f"=IFERROR(VLOOKUP(D{row},06_ERP_SKU成本表!A:E,5,FALSE)*H{row},0)"},
+                round(d["cost"], 2),  # v2: 已按退款比例缩减的采购成本(非全额 qty×单价)
                 round(d["log_amt"], 2),
                 f"真实账单 ({d['log_matched']}/{d['log_matched']+d['log_unmatched']})",
                 {"type": "formula", "text": f"=K{row}-S{row}"},
