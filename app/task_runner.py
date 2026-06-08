@@ -26,6 +26,41 @@ V02_SHOP_WHITELIST = {
     ("京东", "宝空店"),
 }
 
+# 成本缺口告警: 月报生成时检测"有销量但领星 cg_price=0"的 SKU → 告警采购补成本
+# (2026-06-08 Frankie 要求: 避免报表跑出来才发现单行成本=0/毛利虚高)
+_PROC_DEPT_ROOTS = ["od-273719791eed9b0558c20e0960da991a"]  # 采购部
+_PROC_JOB_TITLES = ["采购专员"]
+
+
+async def _alert_cost_gap(month: str, gap: list, sku_meta: dict, sku_to_shops: dict):
+    """gap=有销量但领星成本0的SKU。告警采购专员+Frankie 在领星补 cg_price 后重跑。非阻塞。"""
+    if not gap:
+        return
+    lines = [
+        f"🟠 [FIN·P1] 国内电商毛利报表 · {month} 采购成本缺口告警",
+        f"以下 {len(gap)} 个 SKU 在 {month} 有销量但领星 cg_price=0 → 报表这些行毛利会虚高，请在领星补采购成本后重跑：",
+    ]
+    for sku in gap[:25]:
+        meta = sku_meta.get(sku) or {}
+        name = meta.get("name", "")
+        shops = sku_to_shops.get(sku, set())
+        shop_str = "/".join(f"{p}{s}" for p, s in list(shops)[:3])
+        tag = "(领星无此SKU)" if not meta else "(领星有但cg=0)"
+        lines.append(f"• {sku} {name} {tag} [{shop_str}]")
+    lines.append("补完领星 cg_price → 把月度汇总行改「🔥触发计算」重跑即修。")
+    msg = "\n".join(lines)
+    recips: dict = {}
+    try:
+        recips.update(await feishu.resolve_users_jt_fallback(_PROC_DEPT_ROOTS, _PROC_JOB_TITLES))
+    except Exception:
+        pass
+    recips.setdefault(config.FRANKIE_OPEN_ID, "潘志聪")
+    for oid in recips:
+        try:
+            await feishu.send_text(oid, msg)
+        except Exception:
+            pass
+
 
 async def update_status(record_id: str, fields: dict):
     return await feishu.bitable_update_record(
@@ -232,6 +267,15 @@ async def run_profit(record_id: str) -> dict:
             sku = o.get("sku", "")
             if sku:
                 sku_to_shops.setdefault(sku, set()).add((o["platform"], o["shop"]))
+
+        # 2.4 成本缺口自查 + 告警采购 (有销量但领星 cg_price=0 → 报表毛利虚高)
+        cost_gap = [s for s in raw["sku_set"] if s and sku_costs.get(s, 0) == 0]
+        if cost_gap:
+            print(f"  ⚠️ 成本缺口 {len(cost_gap)} SKU(领星cg=0): {cost_gap[:15]} → 告警采购")
+            try:
+                await _alert_cost_gap(year_month, cost_gap, sku_meta, sku_to_shops)
+            except Exception as e:
+                print(f"  成本缺口告警失败: {e}")
 
         # 2.5 顺丰 API 反查运费 (v0.5 加, 2026-05-12)
         # 策略: 从订单提取所有 SF 运单号 → 并发查 API → 与 xlsx 解析的 logistics 双路径
