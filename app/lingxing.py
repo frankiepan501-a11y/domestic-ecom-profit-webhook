@@ -14,6 +14,17 @@ from . import config
 
 _TOKEN = {"value": None, "expire": 0}
 
+# 旧商家编码(平台后台改编码前) → 领星真实 SKU。蔡宗佑确认 2026-06-08:
+# 同一产品平台后台中途改过编码, 历史订单仍带旧码 → 领星查不到成本按0算。
+# 食人花/收纳包 4月用 SWSNB01 / 5月改成 SWLSNB01, 同产品都映射 FLZD04。
+HIST_SKU_MAP = {
+    "SWSNB01": "FLZD04",
+    "SWLSNB01": "FLZD04",
+    "SWSNB02": "FLZD02",
+    "ZFTFL01": "FLTGO10",
+    "SWYGM02": "ODRKB001",
+}
+
 
 def _md5(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest().upper()
@@ -61,6 +72,13 @@ async def get_products(skus: set[str]) -> dict[str, dict]:
     if not skus:
         return {}
     sku_set = set(skus)
+    # 旧编码 → 用领星真实 SKU 查, 但结果回填到旧编码 (新码→[旧码们])
+    new_to_old: dict[str, list] = {}
+    for old in sku_set:
+        new = HIST_SKU_MAP.get(old)
+        if new:
+            new_to_old.setdefault(new, []).append(old)
+    query_set = sku_set | set(new_to_old)
     out: dict[str, dict] = {}
     offset = 0
     page_size = 200
@@ -70,14 +88,18 @@ async def get_products(skus: set[str]) -> dict[str, dict]:
         data = res.get("data") or []
         for p in data:
             sku = p.get("sku")
-            if sku in sku_set:
-                out[sku] = {
+            if sku in query_set:
+                info = {
                     "name": p.get("product_name", ""),
                     "cost": float(p.get("cg_price") or 0),
                     "brand": p.get("brand_name", ""),
                     "category": p.get("category_name", ""),
                     "status": p.get("status_text", ""),
                 }
+                if sku in sku_set:
+                    out[sku] = info
+                for old in new_to_old.get(sku, []):  # 旧码也指向同一成本
+                    out[old] = info
         total = res.get("total", 0)
         offset += page_size
         if offset >= total or not data:

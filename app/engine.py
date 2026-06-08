@@ -163,9 +163,11 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
                     if op > 0:
                         refund_v += supp * (payable / op)
                 refund_v = min(refund_v, payable)  # clamp 全退→=应付
-                # 定金预售单: 货值(数量×进货成本)远超收款(>3倍) → 货未发, 成本=0/销量不计虚数
-                # (平台无关, 不依赖price单价/总价语义; 未映射SKU成本0天然不触发)
-                is_deposit = unit_cost > 0 and qty * unit_cost > payable * 3
+                # 定金预售单/补差价凑单: 货值(数量×成本)远超收款>3倍, 或 大数量且每件实付<¥1
+                # → 货未发/非真实商品 → 成本=0/销量不计虚数(净销售照算)。
+                # 第2条不依赖成本, 盖住 sku 空/未映射 的补差价单(如 0.01元×5900件)。
+                is_deposit = (unit_cost > 0 and qty * unit_cost > payable * 3) \
+                    or (qty >= 50 and payable / qty < 1)
                 gross_line = payable
                 refund_line = refund_v
                 net_line = payable - refund_v
@@ -188,7 +190,8 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
                     if ord_refund > 0:
                         matched_refund_oids.add((plat, shop, main_oid))
                     refund_line = min(ord_refund * (paid / ord_total), paid)  # clamp
-                is_deposit = unit_cost > 0 and qty * unit_cost > paid * 3
+                is_deposit = (unit_cost > 0 and qty * unit_cost > paid * 3) \
+                    or (qty >= 50 and paid / qty < 1)
                 gross_line = paid
                 net_line = paid - refund_line
                 if is_deposit:
