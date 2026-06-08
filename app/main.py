@@ -85,3 +85,12 @@ async def remind_monthly(force: bool = False, authorization: str | None = Header
     _check_auth(authorization)
     from . import reminder
     return await reminder.monthly_upload_reminder(force=force)
+
+
+@app.post("/tasks/escalate-overdue")
+async def escalate_overdue(force: bool = False, authorization: str | None = Header(None)):
+    """逾期升级 (8-10号窗口): 上月数据齐+汇总行未触发→自动触发; 否则 P1 催运营+财务+Frankie。
+    n8n cron 每月8-10号每天调; force=true 强制跑(测试)。"""
+    _check_auth(authorization)
+    from . import reminder
+    return await reminder.escalate_overdue(force=force)
