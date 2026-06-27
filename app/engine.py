@@ -148,10 +148,13 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
         net_line = 0.0
         cost_line = 0.0
         qty_eff = 0.0
+        refund_count = False  # 是否计入"退款数量"(天猫=订单表原值口径; 非天猫=退款表join)
 
         if plat in TMALL_TAOBAO:
             payable = _money(o.get("payable"))
             refund_v = _money(o.get("order_refund"))  # 退款金额 (无退款申请→0)
+            # 退款数量按订单表原始退款金额>0 计数 (对齐人工筛订单表; 退款表补漏只补金额不补数量)
+            refund_count = refund_v > 0
             if status == "交易关闭" and refund_v <= 0:
                 # 未付款关闭(case ①): 应付>0 但未成交 → 整单剔除, 防应付虚增
                 included = False
@@ -190,6 +193,7 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
                     if ord_refund > 0:
                         matched_refund_oids.add((plat, shop, main_oid))
                     refund_line = min(ord_refund * (paid / ord_total), paid)  # clamp
+                refund_count = refund_line > 0
                 is_deposit = (unit_cost > 0 and qty * unit_cost > paid * 3) \
                     or (qty >= 50 and paid / qty < 1)
                 gross_line = paid
@@ -213,7 +217,7 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
             a["gross"] += gross_line
             a["refund_amt"] += refund_line
             a["cost"] += cost_line
-            if refund_line > 0:
+            if refund_count:
                 a["refund_qty"] += 1
             if main_oid:
                 a["orders"].add(main_oid)
@@ -226,28 +230,34 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
     for f in plat_fees:
         shop_cat[(f["platform"], f["shop"])][classify_fee(f.get("fee_type", ""))] += float(f.get("amount") or 0)
 
-    # 店铺净销售合计 (分摊基准)
+    # 店铺净销售合计 + 毛销售合计 (分摊基准)
     shop_net: dict = defaultdict(float)
+    shop_gross: dict = defaultdict(float)
     for key, a in agg.items():
         shop_net[(key[0], key[1])] += (a["gross"] - a["refund_amt"])
+        shop_gross[(key[0], key[1])] += a["gross"]
+
+    def _alloc_basis(sk, a):
+        """分摊比例: 正常店按净销售; 全退店(净≤0但有毛销售)按毛销售, 防平台费/广告蒸发。"""
+        if shop_net[sk] > 0:
+            return (a["gross"] - a["refund_amt"]) / shop_net[sk]
+        if shop_gross[sk] > 0:
+            return a["gross"] / shop_gross[sk]
+        return 0.0
 
     for key, a in agg.items():
         sk = (key[0], key[1])
-        base = shop_net[sk] or 1
-        net_sku = a["gross"] - a["refund_amt"]
-        pct = net_sku / base
+        pct = _alloc_basis(sk, a)
         for cat in "LMNOP":
             a[f"plat_{cat}"] = shop_cat[sk][cat] * pct
 
-    # === Pass 3: 广告按店铺汇总, 店铺内按净销售比例分摊 ===
+    # === Pass 3: 广告按店铺汇总, 店铺内分摊 (同上 basis, 全退店按毛销售) ===
     shop_ad: dict = defaultdict(float)
     for a in ads:
         shop_ad[(a["platform"], a["shop"])] += float(a.get("spend") or 0)
     for key, a in agg.items():
         sk = (key[0], key[1])
-        base = shop_net[sk] or 1
-        net_sku = a["gross"] - a["refund_amt"]
-        a["ad"] = shop_ad[sk] * (net_sku / base)
+        a["ad"] = shop_ad[sk] * _alloc_basis(sk, a)
 
     # === Pass 4: 物流按运单号 join (全公司池) ===
     log_by_track: dict = {}
@@ -319,32 +329,43 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
         st["log_amt"] += d["log_amt"]
         st["sku_count"] += 1
 
-    # === orphan: 有平台费/广告但无任何订单聚合的店铺 ===
+    # === orphan: 有平台费/广告/退款但无任何订单聚合的店铺 ===
+    # 退款损失 (订单不在本月文件 → 该店纯退款, 按退款月计为销售退回损失, 不再静默丢弃)。
+    shop_refund_orphan: dict = defaultdict(float)
+    for r in refunds:
+        shop_refund_orphan[(r["platform"], r["shop"])] += _money(r.get("amount"))
     orphan_keys: set = set()
     for f in plat_fees:
         orphan_keys.add((f["platform"], f["shop"]))
     for a in ads:
         orphan_keys.add((a["platform"], a["shop"]))
+    for sk in shop_refund_orphan:
+        orphan_keys.add(sk)
     for sk in orphan_keys:
         if sk in shop_totals:
             continue
         platform, shop = sk
         plat_sum = sum(shop_cat[sk].values())
         ad_sum = shop_ad.get(sk, 0.0)
+        refund_loss = shop_refund_orphan.get(sk, 0.0)
         st = shop_totals[sk]
         st["plat"] = plat_sum
         st["ad"] = ad_sum
-        result[(platform, shop, "(无成交-orphan)")] = {
-            "platform": platform, "shop": shop, "sku": "(无成交-orphan)",
-            "name": "无有效订单(仅平台费/广告)",
-            "qty": 0, "refund_qty": 0, "paid": 0.0, "refund_amt": 0.0,
+        st["refund_amt"] = refund_loss
+        label = "(退款损失-订单不在本月)" if refund_loss > 0 else "(无成交-orphan)"
+        name = ("仅退款无本月订单(销售退回损失)" if refund_loss > 0
+                else "无有效订单(仅平台费/广告)")
+        result[(platform, shop, label)] = {
+            "platform": platform, "shop": shop, "sku": label,
+            "name": name,
+            "qty": 0, "refund_qty": 0, "paid": 0.0, "refund_amt": refund_loss,
             "plat_L": shop_cat[sk]["L"], "plat_M": shop_cat[sk]["M"],
             "plat_N": shop_cat[sk]["N"], "plat_O": shop_cat[sk]["O"],
             "plat_P": shop_cat[sk]["P"],
             "plat_total": plat_sum, "ad": ad_sum, "cost": 0.0,
             "log_amt": 0.0, "log_matched": 0, "log_unmatched": 0,
-            "net_sales": 0.0,
-            "gross": -plat_sum - ad_sum,
+            "net_sales": -refund_loss,
+            "gross": -plat_sum - ad_sum - refund_loss,
             "gross_rate": 0,
         }
 

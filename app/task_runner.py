@@ -7,6 +7,7 @@ v0.2.0 关键变化:
 """
 import asyncio
 import json
+import os
 import traceback
 from datetime import datetime
 from . import config, feishu, parsers, engine, writer, lingxing, sf_api
@@ -366,7 +367,11 @@ async def run_profit(record_id: str) -> dict:
             f"净销售: ¥{net:.2f}\n"
             f"毛利额: ¥{all_gross:.2f} ({gross_rate:.1f}%)"
             + skip_txt + f"\n\n报表: {url}\n📌 请注意查收")
-        await _notify_report_ready(msg)
+        # REPORT_SUPPRESS_NOTIFY=1 时静默重生(修复重跑用), 不打扰收件人; 缺省/0 正常通知。
+        if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
+            print("  ⏭ 通知已抑制 (REPORT_SUPPRESS_NOTIFY)")
+        else:
+            await _notify_report_ready(msg)
 
         return {"ok": True, "url": url, "gross": all_gross, "gross_rate": gross_rate}
 

@@ -721,68 +721,86 @@ def _parse_jd_flow(buf: bytes, ext: str) -> tuple[list[tuple], list[str]]:
         return list(all_rows[1:]), list(all_rows[0])
 
 
+def _read_jd_table(buf: bytes, ext: str) -> tuple[list, list]:
+    """通用读 (rows, header), 不假设格式. 支持 csv (utf-8-sig/gbk) 与 xlsx."""
+    if ext == "csv":
+        for enc in ("utf-8-sig", "gbk", "utf-8"):
+            try:
+                rows = list(csv.reader(io.StringIO(buf.decode(enc))))
+                if rows:
+                    return rows[1:], rows[0]
+            except Exception:
+                continue
+        return [], []
+    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    if not all_rows:
+        return [], []
+    return list(all_rows[1:]), list(all_rows[0])
+
+
+# 京东订单状态: 这些视为未成交, 不计销售 (退款另由退款明细处理)
+JD_INVALID_STATUS = ("待付款", "待支付", "等待付款", "已取消", "取消", "已关闭", "关闭")
+
+
 def parse_jd_orders(buf: bytes, year_month: str, ext: str = "xlsx") -> tuple[list[dict], set]:
-    """按订单号聚合 30 列费用流水: 收入行=销售, 支出行=平台费."""
-    from collections import defaultdict
-    rows, header = _parse_jd_flow(buf, ext)
+    """京东订单 (赵伟俊 2026-06 口径): 读标准「订单明细」导出。
+    销售额=应付金额(=货款) / SKU=商家SKUID(干净ERP SKU) / 数量=订购数量 / 运单=快递单号 / 归月=下单时间。
+    平台费另由「订单结算明细对账表」走 parse_jd_platform_fee(支出列)。退款另由退款明细 join。
+    旧版「货款明细流水」格式(订单编号+收支方向)不再作订单源 → 返回空。"""
+    rows, header = _read_jd_table(buf, ext)
     if not header:
         return [], set()
-    col = {h: i for i, h in enumerate(header) if h}
-    if "订单编号" not in col:
-        return [], set()
+    col = {str(h).strip(): i for i, h in enumerate(header) if h}
+    if "订单号" not in col or "应付金额" not in col:
+        return [], set()  # 非订单明细格式(如对账流水) 不作订单源
 
-    by_oid: dict = defaultdict(lambda: {"income": 0.0, "spend": 0.0,
-                                         "first": None, "qty": 0})
-    for r in rows:
-        if not r or not r[0]:
-            continue
-        oid = _strip_jd(r[col["订单编号"]])
-        if not oid:
-            continue
-        amt_raw = _strip_jd(r[col.get("应结金额", -1)])
-        try:
-            amt = float(amt_raw)
-        except (ValueError, TypeError):
-            amt = 0
-        direction = _strip_jd(r[col.get("收支方向", -1)])
-        if direction == "收入":
-            by_oid[oid]["income"] += amt
-        elif direction == "支出":
-            by_oid[oid]["spend"] += abs(amt)
-        if by_oid[oid]["first"] is None:
-            by_oid[oid]["first"] = r
-            qty_raw = _strip_jd(r[col.get("商品数量", -1)])
-            try:
-                by_oid[oid]["qty"] = float(qty_raw) if qty_raw else 0
-            except (ValueError, TypeError):
-                pass
+    def g(r, k):
+        i = col.get(k, -1)
+        return r[i] if 0 <= i < len(r) else None
 
     out = []
     sku_set = set()
-    for oid, d in by_oid.items():
-        if d["income"] <= 0:
-            continue  # 跳过纯支出订单(已退款/调账)
-        first = d["first"]
-        complete_t = _strip_jd(first[col.get("订单完成时间", -1)])
-        order_t = _strip_jd(first[col.get("订单下单时间", -1)])
-        # 归月口径: 按"下单时间"优先, 与其他平台(付款/支付/发货时间)对齐, 避免跨月单错位 (2026-05-28)
-        t = order_t or complete_t
-        if year_month not in t:
+    for r in rows:
+        if not r or not r[0]:
             continue
-        sku = ""  # 京东商品编号 ≠ ERP_SKU, 留空待 v0.4 mapping
+        oid = _strip_jd(g(r, "订单号"))
+        if not oid:
+            continue
+        status = _strip_jd(g(r, "订单状态"))
+        if any(s in status for s in JD_INVALID_STATUS):
+            continue
+        order_t = _strip_jd(g(r, "下单时间"))
+        if year_month not in (order_t or ""):
+            continue  # 归月按下单时间, 与其他平台对齐
+        try:
+            paid = float(_strip_jd(g(r, "应付金额")) or 0)
+        except (ValueError, TypeError):
+            paid = 0
+        if paid <= 0:
+            continue
+        sku = _strip_jd(g(r, "商家SKUID"))
+        try:
+            qty = float(_strip_jd(g(r, "订购数量")) or 1)
+        except (ValueError, TypeError):
+            qty = 1
+        if sku:
+            sku_set.add(sku)
         out.append({
             "main_oid": oid,
             "sub_oid": "",
             "create_t": order_t,
-            "pay_t": complete_t,
-            "sku": sku,
-            "title": first[col.get("商品名称", -1)] or "",
+            "pay_t": _strip_jd(g(r, "付款确认时间")),
+            "sku": sku or "(未填)",
+            "title": _strip_jd(g(r, "商品名称")) or "",
             "attr": "",
-            "qty": d["qty"] or 1,
+            "qty": qty or 1,
             "price": 0,
-            "paid": d["income"],  # 收入合计 = 销售额
-            "tracking": "",
-            "status": _strip_jd(first[col.get("订单状态", -1)]),
+            "paid": paid,  # 应付金额 = 货款 = 销售额 (赵口径)
+            "tracking": _strip_jd(g(r, "快递单号")),
+            "status": status,
             "refund_status": "",
         })
     return out, sku_set
