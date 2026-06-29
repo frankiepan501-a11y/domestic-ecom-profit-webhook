@@ -34,6 +34,18 @@ def _money(v) -> float:
         return 0.0
 
 
+# 退款状态过滤 (赵伟俊+阿俊 2026-06-29 方案A): 只把"真实退款"计入退款额。
+# 退款关闭(换货/运费/未真退)、失败、驳回、撤销 → 不算退款。空状态(平台无此列) → 默认计入(不影响其他平台)。
+_REFUND_BAD_STATUS = ("关闭", "失败", "驳回", "拒绝", "撤销", "取消")
+
+
+def _refund_ok(status) -> bool:
+    s = str(status or "").strip()
+    if not s:
+        return True
+    return not any(b in s for b in _REFUND_BAD_STATUS)
+
+
 def classify_fee(fee_type: str) -> str:
     if "佣金" in fee_type or "类目软件服务费" in fee_type:
         return "L"
@@ -77,6 +89,8 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
         oid = str(r.get("main_oid") or "").strip()
         if not oid:
             continue
+        if not _refund_ok(r.get("status")):
+            continue  # 退款关闭(换货/未真退)不补 — 阿俊 2026-06-29 PK02-S2A ¥501 误扣根因
         k = (r["platform"], r["shop"], oid)
         if k in tmall_oids and tmall_order_refund[k] <= 0:
             tmall_refund_supp[k] += _money(r.get("amount"))
@@ -88,6 +102,8 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
             continue  # 天猫/淘宝走订单表; 拼多多走店铺级(下面)
         if year_month and (r.get("pay_t") or "") and not _ym_match(r.get("pay_t"), year_month):
             continue  # 退款表带付款时间且跨期 → 权责归他月
+        if not _refund_ok(r.get("status")):
+            continue  # 退款关闭/失败不算
         oid = str(r.get("main_oid") or "").strip()
         if not oid:
             continue
@@ -98,6 +114,8 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
     for r in refunds:
         if r.get("platform") not in PDD:
             continue
+        if not _refund_ok(r.get("status")):
+            continue  # 退款关闭/失败不算
         pdd_shop_refund[(r["platform"], r["shop"])] += _money(r.get("amount"))
 
     # 4 平台每订单实付合计 (订单号 join 用) + 拼多多店铺毛销售合计 (店铺级退款比例用)
@@ -153,14 +171,15 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
         if plat in TMALL_TAOBAO:
             payable = _money(o.get("payable"))
             refund_v = _money(o.get("order_refund"))  # 退款金额 (无退款申请→0)
-            # 退款数量按订单表原始退款金额>0 计数 (对齐人工筛订单表; 退款表补漏只补金额不补数量)
-            refund_count = refund_v > 0
-            if status == "交易关闭" and refund_v <= 0:
-                # 未付款关闭(case ①): 应付>0 但未成交 → 整单剔除, 防应付虚增
+            # 退款数量(方案A): 订单表退款>0 或 退款表补漏(已过滤退款成功)>0 → 计数;
+            # 退款关闭(换货)不进补漏故不计(PK02-S2A: 订单表0+补漏0 → 0笔0额, 对齐人工筛订单表"退款成功")
+            supp = tmall_refund_supp.get((plat, shop, main_oid), 0.0)
+            refund_count = (refund_v > 0) or (supp > 0)
+            if status == "交易关闭" and refund_v <= 0 and supp <= 0:
+                # 未付款关闭(case ①): 应付>0 但未成交且无真退款 → 整单剔除, 防应付虚增
                 included = False
             elif payable > 0:
-                # 退款表补漏: 该单订单表退款=0 但退款表有(本月) → 按应付权重分摊补扣
-                supp = tmall_refund_supp.get((plat, shop, main_oid), 0.0)
+                # 退款表补漏: 该单订单表退款=0 但退款表有(本月,退款成功) → 按应付权重分摊补扣
                 if supp > 0:
                     op = tmall_order_payable.get((plat, shop, main_oid), 0.0)
                     if op > 0:
@@ -333,6 +352,8 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
     # 退款损失 (订单不在本月文件 → 该店纯退款, 按退款月计为销售退回损失, 不再静默丢弃)。
     shop_refund_orphan: dict = defaultdict(float)
     for r in refunds:
+        if not _refund_ok(r.get("status")):
+            continue  # 退款关闭/失败不算损失
         shop_refund_orphan[(r["platform"], r["shop"])] += _money(r.get("amount"))
     orphan_keys: set = set()
     for f in plat_fees:

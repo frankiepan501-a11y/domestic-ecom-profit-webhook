@@ -152,6 +152,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
         i_ct = _pick(col, "退款完结时间"); i_type = _pick(col, "售后类型")
         i_reason = _pick(col, "买家退款原因"); i_payt = _pick(col, "订单付款时间")
         i_tb = _pick(col, "退给买家金额"); i_tp = _pick(col, "退给平台金额")
+        i_status = _pick(col, "退款状态")  # 退款成功/退款关闭(换货等不真退) — 引擎只认成功
         for r in all_rows[1:]:
             out.append({
                 "refund_id": g(r, i_rid) or "", "main_oid": g(r, i_main) or "",
@@ -159,7 +160,7 @@ def parse_tmall_refunds(buf: bytes, filename: str = "") -> list[dict]:
                 "complete_t": str(g(r, i_ct) or ""), "amount": g(r, i_total) or 0,
                 "type": g(r, i_type) or "", "reason": g(r, i_reason) or "",
                 "to_buyer": g(r, i_tb) or 0, "to_platform": g(r, i_tp) or 0,
-                "pay_t": str(g(r, i_payt) or ""),
+                "pay_t": str(g(r, i_payt) or ""), "status": g(r, i_status) or "",
             })
         return out
     # 情形 B: 运营传的是订单明细表 → 从"退款金额">0 的行提取
