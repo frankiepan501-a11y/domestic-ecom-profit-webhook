@@ -49,6 +49,7 @@ BRAND_SHOP_ALIASES = {
     "funlab": ("funlab", "纷岚", "梵乐璞"),
     "cube": ("正方体", "正方体电玩"),
 }
+UPLOAD_FILE_CONCURRENCY = 3
 
 TERMINAL_RUN_STATES = {
     "本期无结算已确认",
@@ -848,7 +849,7 @@ async def upload_page(run_id: str, token: str) -> str:
 
   <section class="panel">
     <h2>文件夹批量上传</h2>
-    <p class="hint">建议文件夹或文件名包含“平台 / 店铺 / 文件类型”。能精确匹配的文件会自动写入对应资料项；无法匹配的文件会列出来，不会静默入账。</p>
+    <p class="hint">建议文件夹或文件名包含“平台 / 店铺 / 文件类型”。能精确匹配的文件会自动写入对应资料项；无法匹配的文件会列出来，不会静默入账。文件夹上传会先传到系统，再写飞书附件和 ledger；文件多时请等待页面返回结果。</p>
     <form id="batchForm" class="batch-row">
       <input type="hidden" name="run_id" value="{safe_run}">
       <input type="hidden" name="token" value="{safe_token}">
@@ -886,12 +887,19 @@ form.addEventListener('submit', async (event) => {{
   for (const file of input.files) {{
     fd.append('files', file, file.webkitRelativePath || file.name);
   }}
-  out.textContent = '上传中，请勿关闭页面...';
-  const resp = await fetch('/upload/batch', {{ method: 'POST', body: fd }});
-  const text = await resp.text();
-  document.open();
-  document.write(text);
-  document.close();
+  const button = form.querySelector('button[type=submit]');
+  button.disabled = true;
+  out.textContent = `正在上传 ${{input.files.length}} 个文件，并写入飞书附件/ledger。文件多时可能需要 1-3 分钟，请勿刷新或关闭页面。`;
+  try {{
+    const resp = await fetch('/upload/batch', {{ method: 'POST', body: fd }});
+    const text = await resp.text();
+    document.open();
+    document.write(text);
+    document.close();
+  }} catch (err) {{
+    button.disabled = false;
+    out.textContent = `上传请求失败：${{err && err.message ? err.message : err}}。请保留文件夹，稍后重试；已成功写入的旧附件不会被清空。`;
+  }}
 }});
 </script>
 </body></html>
@@ -1058,14 +1066,23 @@ async def submit_upload_gate(run_id: str, token: str) -> dict:
 
 
 async def _upload_files(files: list[UploadFile]) -> list[dict]:
+    sem = asyncio.Semaphore(UPLOAD_FILE_CONCURRENCY)
+
+    async def _one(f: UploadFile) -> dict | None:
+        async with sem:
+            content = await f.read()
+            original_name = f.filename or "upload.bin"
+            base_name = _file_basename(original_name)
+            res = await feishu.drive_upload_bitable_file(base_name, content, config.LEDGER_APP_TOKEN)
+            file_token = (res.get("data") or {}).get("file_token")
+            if file_token:
+                return {"file_token": file_token, "name": base_name}
+            return None
+
     uploaded = []
-    for f in files:
-        content = await f.read()
-        original_name = f.filename or "upload.bin"
-        res = await feishu.drive_upload_bitable_file(_file_basename(original_name), content, config.LEDGER_APP_TOKEN)
-        file_token = (res.get("data") or {}).get("file_token")
-        if file_token:
-            uploaded.append({"file_token": file_token, "name": _file_basename(original_name)})
+    for item in await asyncio.gather(*[_one(f) for f in files]):
+        if item:
+            uploaded.append(item)
     return uploaded
 
 
