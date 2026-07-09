@@ -1,10 +1,11 @@
 """FastAPI 入口 — 国内电商毛利报表 webhook 服务."""
 import asyncio
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-app = FastAPI(title="domestic-ecom-profit", version="0.2.0")
+app = FastAPI(title="domestic-ecom-profit", version="0.3.0")
 
 
 class RunRequest(BaseModel):
@@ -13,7 +14,8 @@ class RunRequest(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.2.0", "task_app": config.TASK_APP_TOKEN}
+    return {"status": "ok", "version": "0.3.0", "task_app": config.TASK_APP_TOKEN,
+            "ledger_run_table": config.LEDGER_RUN_TABLE_ID}
 
 
 def _check_auth(authorization: str | None):
@@ -83,6 +85,9 @@ async def ensure_month(year_month: str | None = None, authorization: str | None 
 async def remind_monthly(force: bool = False, authorization: str | None = Header(None)):
     """月初上传提醒 (3-5号窗口第一个工作日才真发)。n8n cron 每月3-5号每天调; force=true 强制发(测试)。"""
     _check_auth(authorization)
+    if config.CARD_WORKFLOW_ENABLED:
+        from . import card_workflow
+        return await card_workflow.send_monthly_intake(force=force)
     from . import reminder
     return await reminder.monthly_upload_reminder(force=force)
 
@@ -94,3 +99,57 @@ async def escalate_overdue(force: bool = False, authorization: str | None = Head
     _check_auth(authorization)
     from . import reminder
     return await reminder.escalate_overdue(force=force)
+
+
+@app.post("/cards/monthly-intake")
+async def cards_monthly_intake(year_month: str | None = None, force: bool = False,
+                               dry_run: bool = False, frankie_only: bool = False,
+                               authorization: str | None = Header(None)):
+    """创建/复用 run_id, 写资料清单 ledger, 发运营资料提交卡。"""
+    _check_auth(authorization)
+    from . import card_workflow
+    return await card_workflow.send_monthly_intake(
+        year_month, force=force, dry_run=dry_run, frankie_only=frankie_only)
+
+
+@app.post("/cards/test")
+async def cards_test(year_month: str | None = None, send: bool = False,
+                     authorization: str | None = Header(None)):
+    """P0 smoke: 默认只返回卡片 JSON; send=true 发 Frankie 私聊。"""
+    _check_auth(authorization)
+    from . import card_workflow
+    return await card_workflow.send_monthly_intake(
+        year_month, force=True, dry_run=not send, frankie_only=True)
+
+
+@app.post("/cards/callback")
+async def cards_callback(req: dict, authorization: str | None = Header(None)):
+    """Event Hub 转发 card.action.trigger 到这里。业务写入和 PATCH 在服务端幂等处理。"""
+    _check_auth(authorization)
+    from . import card_workflow
+    return await card_workflow.handle_callback(req)
+
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(run_id: str, token: str):
+    from . import card_workflow
+    return HTMLResponse(await card_workflow.upload_page(run_id, token))
+
+
+@app.post("/upload", response_class=HTMLResponse)
+async def upload_files(run_id: str = Form(...), token: str = Form(...),
+                       file_manifest_id: str = Form(...),
+                       files: list[UploadFile] = File(...)):
+    from . import card_workflow
+    result = await card_workflow.handle_upload(run_id, token, file_manifest_id, files)
+    if not result.get("ok"):
+        msg = html_escape(str(result.get("error", "upload failed")))
+        return HTMLResponse(f"<h3>上传失败</h3><p>{msg}</p>", status_code=400)
+    return HTMLResponse("<h3>上传成功</h3><p>系统已写入资料清单附件台，可以回到飞书卡片点击“已上传资料”。</p>")
+
+
+def html_escape(text: str) -> str:
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;"))

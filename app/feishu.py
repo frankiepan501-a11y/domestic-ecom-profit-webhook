@@ -5,25 +5,32 @@ import httpx
 from typing import Any
 from . import config
 
-_TOKEN = {"value": None, "expire": 0}
+_TOKENS: dict[str, dict[str, Any]] = {}
 
 
-async def get_token() -> str:
-    if _TOKEN["value"] and _TOKEN["expire"] > time.time() + 300:
-        return _TOKEN["value"]
+async def get_token(app_id: str | None = None, app_secret: str | None = None) -> str:
+    app_id = app_id or config.FEISHU_APP_ID
+    app_secret = app_secret or config.FEISHU_APP_SECRET
+    token = _TOKENS.get(app_id) or {"value": None, "expire": 0}
+    if token["value"] and token["expire"] > time.time() + 300:
+        return token["value"]
     async with httpx.AsyncClient(timeout=15) as cli:
         r = await cli.post(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": config.FEISHU_APP_ID, "app_secret": config.FEISHU_APP_SECRET},
+            json={"app_id": app_id, "app_secret": app_secret},
         )
         d = r.json()
-        _TOKEN["value"] = d["tenant_access_token"]
-        _TOKEN["expire"] = time.time() + d.get("expire", 7200)
-    return _TOKEN["value"]
+        token["value"] = d["tenant_access_token"]
+        token["expire"] = time.time() + d.get("expire", 7200)
+        _TOKENS[app_id] = token
+    return token["value"]
 
 
-async def _req(method: str, path: str, **kwargs) -> dict:
-    tok = await get_token()
+async def _req(method: str, path: str, *, use_event_app: bool = False, **kwargs) -> dict:
+    if use_event_app:
+        tok = await get_token(config.FEISHU_EVENT_APP_ID, config.FEISHU_EVENT_APP_SECRET)
+    else:
+        tok = await get_token()
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {tok}"
     async with httpx.AsyncClient(timeout=60) as cli:
@@ -63,6 +70,11 @@ async def bitable_update_record(app_token: str, table_id: str, record_id: str, f
                       json={"fields": fields})
 
 
+async def bitable_create_record(app_token: str, table_id: str, fields: dict) -> dict:
+    return await _req("POST", f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                      json={"fields": fields})
+
+
 async def bitable_batch_create(app_token: str, table_id: str, records: list[dict]) -> dict:
     """批量创建记录。records=[{"fields":{...}}, ...] (最多500条)。"""
     return await _req("POST",
@@ -85,6 +97,28 @@ async def drive_download_media(file_token: str, extra: str | None = None) -> byt
         )
         r.raise_for_status()
         return r.content
+
+
+async def drive_upload_bitable_file(file_name: str, content: bytes, parent_node: str) -> dict:
+    """上传文件到 Base 附件资源池，返回 drive medias 响应。"""
+    tok = await get_token()
+    files = {
+        "file": (file_name, content),
+    }
+    data = {
+        "file_name": file_name,
+        "parent_type": "bitable_file",
+        "parent_node": parent_node,
+        "size": str(len(content)),
+    }
+    async with httpx.AsyncClient(timeout=120) as cli:
+        r = await cli.post(
+            "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all",
+            headers={"Authorization": f"Bearer {tok}"},
+            data=data,
+            files=files,
+        )
+        return r.json()
 
 
 # ===== Sheets =====
@@ -212,6 +246,22 @@ async def contact_dept_members_full(open_department_id: str) -> list[dict]:
     return out
 
 
+async def contact_user_get(open_id: str) -> dict:
+    r = await _req("GET", f"/open-apis/contact/v3/users/{open_id}",
+                   params={"user_id_type": "open_id"})
+    return (r.get("data") or {}).get("user") or {}
+
+
+async def open_id_to_union_id(open_id: str) -> str:
+    if not open_id:
+        return ""
+    try:
+        user = await contact_user_get(open_id)
+        return str(user.get("union_id") or "")
+    except Exception:
+        return ""
+
+
 async def resolve_users_by_job_title(dept_roots: list[str], job_titles: list[str]) -> dict[str, str]:
     """部门(含子)成员中 job_title ∈ job_titles 的 {open_id: name} (实时, 岗位换人自动跟随)。"""
     titles = set(job_titles)
@@ -240,3 +290,42 @@ async def send_text(open_id: str, text: str) -> dict:
             "content": json.dumps({"text": text}, ensure_ascii=False)}
     return await _req("POST", "/open-apis/im/v1/messages",
                       params={"receive_id_type": "open_id"}, json=body)
+
+
+async def send_interactive_open_id(open_id: str, card: dict, *, use_event_app: bool = True) -> dict:
+    body = {
+        "receive_id": open_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    return await _req("POST", "/open-apis/im/v1/messages",
+                      params={"receive_id_type": "open_id"}, json=body,
+                      use_event_app=use_event_app)
+
+
+async def send_interactive_chat(chat_id: str, card: dict, *, use_event_app: bool = True) -> dict:
+    body = {
+        "receive_id": chat_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    return await _req("POST", "/open-apis/im/v1/messages",
+                      params={"receive_id_type": "chat_id"}, json=body,
+                      use_event_app=use_event_app)
+
+
+async def send_interactive_union_id(union_id: str, card: dict, *, use_event_app: bool = True) -> dict:
+    body = {
+        "receive_id": union_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    return await _req("POST", "/open-apis/im/v1/messages",
+                      params={"receive_id_type": "union_id"}, json=body,
+                      use_event_app=use_event_app)
+
+
+async def patch_message_card(message_id: str, card: dict, *, use_event_app: bool = True) -> dict:
+    body = {"content": json.dumps(card, ensure_ascii=False)}
+    return await _req("PATCH", f"/open-apis/im/v1/messages/{message_id}",
+                      json=body, use_event_app=use_event_app)

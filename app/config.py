@@ -5,9 +5,23 @@ import os
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "cli_a9f6ae86fce8dbd8")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "r0eQTiBoP1WnQCUnBanMQeu5ACT57at7")
 
+# 飞书 - 聪哥3号 Event Hub App (interactive card sender/callback owner)
+FEISHU_EVENT_APP_ID = os.getenv("FEISHU_EVENT_APP_ID", "cli_a9457898bd78dccc")
+FEISHU_EVENT_APP_SECRET = os.getenv("FEISHU_EVENT_APP_SECRET", "")
+
 # 任务台多维表格
 TASK_APP_TOKEN = os.getenv("TASK_APP_TOKEN", "IKyGb1jydaZW7msBzAicViiWngg")
 TASK_TABLE_ID = os.getenv("TASK_TABLE_ID", "tblMYHXRHZ0GaqMh")
+
+# 国内电商毛利报表卡片化 ledger (Base 只做系统账本, 人不再手动改任务台状态)
+LEDGER_APP_TOKEN = os.getenv("LEDGER_APP_TOKEN", TASK_APP_TOKEN)
+LEDGER_RUN_TABLE_ID = os.getenv("LEDGER_RUN_TABLE_ID", "tblIGDjnDtoceL6F")
+LEDGER_FILE_TABLE_ID = os.getenv("LEDGER_FILE_TABLE_ID", "tbla1F0KMEFqct60")
+LEDGER_GAP_TABLE_ID = os.getenv("LEDGER_GAP_TABLE_ID", "tblqTPPHLWRhHkuD")
+LEDGER_OUTPUT_TABLE_ID = os.getenv("LEDGER_OUTPUT_TABLE_ID", "tblnMy4Jb8jK7JQz")
+LEDGER_AUDIT_TABLE_ID = os.getenv("LEDGER_AUDIT_TABLE_ID", "tblVggmv7oeMBMaj")
+CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "true"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
 # 任务台字段 ID
 FIELD_IDS = {
@@ -33,6 +47,7 @@ FIELD_IDS = {
 
 # Frankie open_id (聪哥1号 namespace) — 用于推送报表生成完成消息
 FRANKIE_OPEN_ID = os.getenv("FRANKIE_OPEN_ID", "ou_629ce01f4bc31de078e10fcb038dbf78")
+FRANKIE_UNION_ID = os.getenv("FRANKIE_UNION_ID", "on_6e85dd60606f76f2d5af892785ac1dfe")
 
 # 领星 ERP
 LINGXING_APP_ID = os.getenv("LINGXING_APP_ID", "ak_B1P0qz2mkImfS")
