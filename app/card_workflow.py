@@ -353,7 +353,7 @@ async def initial_gate_and_maybe_run(run_id: str, period: str) -> dict:
     if open_gaps:
         await ledger.update_run(run_id, "P0待补件", "initial_gate",
                                 f"仍有 {len(open_gaps)} 个 P0 缺口待处理")
-        sent = await send_open_gap_cards(run_id)
+        sent = await send_open_gap_cards(run_id, frankie_only=config.CARD_WORKFLOW_FRANKIE_ONLY)
         return {"ready": False, "open_p0": len(open_gaps), "gap_cards": sent}
     await start_trial_run(run_id)
     return {"ready": True, "trial_started": True}
@@ -410,7 +410,7 @@ async def _trial_task(run_id: str) -> None:
         await ledger.update_run(run_id, "试算失败待排查", "finance_gate_blocked",
                                 f"workbook 缺少 gate sheet: {sorted(names)}")
         return
-    await send_finance_card(run_id, output)
+    await send_finance_card(run_id, output, frankie_only=config.CARD_WORKFLOW_FRANKIE_ONLY)
 
 
 async def send_finance_card(run_id: str, output: dict | None = None,
