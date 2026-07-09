@@ -75,8 +75,23 @@ async def records(table_id: str) -> list[dict]:
     return await feishu.bitable_search_records(config.LEDGER_APP_TOKEN, table_id)
 
 
+def _exact_filter(field: str, value: str) -> dict:
+    return {
+        "conjunction": "and",
+        "conditions": [
+            {"field_name": field, "operator": "is", "value": [value]},
+        ],
+    }
+
+
 async def find_first(table_id: str, field: str, value: str) -> dict | None:
-    for rec in await records(table_id):
+    rows = await feishu.bitable_search_records(
+        config.LEDGER_APP_TOKEN,
+        table_id,
+        filter_obj=_exact_filter(field, value),
+        page_size=20,
+    )
+    for rec in rows:
         if extract_text(rec.get("fields", {}).get(field)) == value:
             return rec
     return None
@@ -84,7 +99,13 @@ async def find_first(table_id: str, field: str, value: str) -> dict | None:
 
 async def find_many(table_id: str, field: str, value: str) -> list[dict]:
     out: list[dict] = []
-    for rec in await records(table_id):
+    rows = await feishu.bitable_search_records(
+        config.LEDGER_APP_TOKEN,
+        table_id,
+        filter_obj=_exact_filter(field, value),
+        page_size=100,
+    )
+    for rec in rows:
         if extract_text(rec.get("fields", {}).get(field)) == value:
             out.append(rec)
     return out

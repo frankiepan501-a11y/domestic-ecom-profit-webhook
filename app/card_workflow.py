@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 from datetime import datetime
@@ -80,9 +81,63 @@ async def _legacy_summary_record_id(year_month: str, rows: list[dict] | None = N
     return ""
 
 
+def _manifest_id(run_id: str, platform: str, shop: str, file_type: str) -> str:
+    fid = hashlib.sha1(f"{run_id}:{platform}:{shop}:{file_type}".encode("utf-8")).hexdigest()[:14]
+    return f"fm_{fid}"
+
+
+def _manifest_key(platform: str, shop: str, file_type: str) -> tuple[str, str, str]:
+    return platform, shop, file_type
+
+
+def _manifest_lookup(existing: list[dict]) -> dict[tuple[str, str, str], dict]:
+    out: dict[tuple[str, str, str], dict] = {}
+    for rec in existing:
+        f = rec.get("fields", {})
+        out[_manifest_key(_ftext(f.get("平台")), _ftext(f.get("店铺")), _ftext(f.get("文件类型")))] = rec
+    return out
+
+
+async def _get_or_create_manifest(existing: dict[tuple[str, str, str], dict], run_id: str,
+                                  platform: str, shop: str, month: str,
+                                  file_type: str, required: bool) -> dict:
+    key = _manifest_key(platform, shop, file_type)
+    rec = existing.get(key)
+    if rec:
+        return rec
+    manifest_id = _manifest_id(run_id, platform, shop, file_type)
+    await ledger.create(ledger.FILE_TABLE, {
+        "file_manifest_id": manifest_id,
+        "run_id": run_id,
+        "平台": platform,
+        "店铺": shop,
+        "月份": month,
+        "文件类型": file_type,
+        "必交": required,
+        "状态": "待提交",
+        "最后动作时间": ledger.now_ms(),
+    })
+    rec = {
+        "record_id": "",
+        "fields": {
+            "file_manifest_id": manifest_id,
+            "run_id": run_id,
+            "平台": platform,
+            "店铺": shop,
+            "月份": month,
+            "文件类型": file_type,
+            "必交": required,
+            "状态": "待提交",
+        },
+    }
+    existing[key] = rec
+    return rec
+
+
 async def _ensure_manifests(run_id: str, year_month: str, rows: list[dict] | None = None) -> list[str]:
     checklist: list[str] = []
     rows = rows if rows is not None else await _legacy_rows(year_month)
+    existing = _manifest_lookup(await ledger.manifests_for_run(run_id))
     for row in rows:
         f = row.get("fields", {})
         dtype = f.get("数据类型")
@@ -91,7 +146,7 @@ async def _ensure_manifests(run_id: str, year_month: str, rows: list[dict] | Non
         title = _ftext(f.get("任务标题"))
         if dtype == "店铺数据":
             for old_field, file_type, required in SHOP_FILE_FIELDS:
-                rec = await ledger.ensure_manifest(run_id, platform, shop, year_month, file_type, required)
+                rec = await _get_or_create_manifest(existing, run_id, platform, shop, year_month, file_type, required)
                 mid = _ftext(rec.get("fields", {}).get("file_manifest_id"))
                 checklist.append(f"{platform}/{shop} - {file_type}")
                 atts = _attachments(f.get(old_field))
@@ -103,7 +158,7 @@ async def _ensure_manifests(run_id: str, year_month: str, rows: list[dict] | Non
                     })
         elif dtype == "物流账单":
             for old_field, file_type, required in LOGISTICS_FILE_FIELDS:
-                rec = await ledger.ensure_manifest(run_id, "全平台", "全公司", year_month, file_type, required)
+                rec = await _get_or_create_manifest(existing, run_id, "全平台", "全公司", year_month, file_type, required)
                 mid = _ftext(rec.get("fields", {}).get("file_manifest_id"))
                 checklist.append(f"{title or '物流月结账单'} - {file_type}")
                 atts = _attachments(f.get(old_field))
