@@ -20,6 +20,8 @@ SHOP_FILE_FIELDS = [
     ("广告/推广", "广告账单", True),
 ]
 LOGISTICS_FILE_FIELDS = [("物流月结账单", "物流账单", True)]
+SHOP_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in SHOP_FILE_FIELDS}
+LOGISTICS_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in LOGISTICS_FILE_FIELDS}
 
 TERMINAL_RUN_STATES = {
     "本期无结算已确认",
@@ -699,11 +701,59 @@ async def handle_upload(run_id: str, token: str, file_manifest_id: str,
             uploaded.append({"file_token": file_token, "name": f.filename})
     if not uploaded:
         return {"ok": False, "error": "no file uploaded"}
+    legacy_mirror = await _mirror_uploaded_files_to_legacy(manifest, uploaded)
     await ledger.mark_manifest(file_manifest_id, {
         "状态": "已提交",
         "附件": uploaded,
         "file_token_json": ledger.compact_json(uploaded),
-        "parser结果": "upload_page",
+        "parser结果": (
+            "upload_page; "
+            f"legacy_record_id={legacy_mirror.get('record_id', '')}; "
+            f"legacy_field={legacy_mirror.get('field', '')}; "
+            f"legacy_mirrored={str(bool(legacy_mirror.get('ok'))).lower()}"
+        ),
     })
     await ledger.update_run(run_id, "资料初检中", "upload_page", "运营已通过上传页补充资料")
-    return {"ok": True, "file_manifest_id": file_manifest_id, "uploaded": uploaded}
+    return {"ok": True, "file_manifest_id": file_manifest_id, "uploaded": uploaded,
+            "legacy_mirror": legacy_mirror}
+
+
+async def _legacy_pointer_for_manifest(manifest: dict) -> dict:
+    f = manifest.get("fields", {})
+    period = _ftext(f.get("月份"))
+    platform = _ftext(f.get("平台"))
+    shop = _ftext(f.get("店铺"))
+    file_type = _ftext(f.get("文件类型"))
+    rows = await _legacy_rows(period)
+    if file_type in LOGISTICS_LEGACY_FIELD_BY_TYPE:
+        old_field = LOGISTICS_LEGACY_FIELD_BY_TYPE[file_type]
+        for row in rows:
+            if row.get("fields", {}).get("数据类型") == "物流账单":
+                return {"record_id": row["record_id"], "field": old_field}
+    old_field = SHOP_LEGACY_FIELD_BY_TYPE.get(file_type)
+    if old_field:
+        for row in rows:
+            rf = row.get("fields", {})
+            if rf.get("数据类型") != "店铺数据":
+                continue
+            if _ftext(rf.get("平台")) == platform and _ftext(rf.get("店铺")) == shop:
+                return {"record_id": row["record_id"], "field": old_field}
+    return {}
+
+
+async def _mirror_uploaded_files_to_legacy(manifest: dict, uploaded: list[dict]) -> dict:
+    pointer = await _legacy_pointer_for_manifest(manifest)
+    record_id = pointer.get("record_id")
+    field = pointer.get("field")
+    if not record_id or not field:
+        return {"ok": False, "reason": "legacy_pointer_not_found"}
+    res = await feishu.bitable_update_record(config.TASK_APP_TOKEN, config.TASK_TABLE_ID, record_id, {
+        field: uploaded,
+    })
+    return {
+        "ok": res.get("code") == 0,
+        "record_id": record_id,
+        "field": field,
+        "response_code": res.get("code"),
+        "response_msg": res.get("msg"),
+    }

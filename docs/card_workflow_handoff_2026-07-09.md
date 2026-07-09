@@ -11,6 +11,7 @@
 - 新增 `app/ledger.py`：封装报表运行台、资料清单附件台、缺口例外台、输出报表台、审计日志台的读写。
 - 新增 `app/cards.py`：运营资料提交卡、P0 缺口卡、财务确认卡、已处理结果卡。
 - 新增 `app/card_workflow.py`：月度 run 创建、资料清单生成、P0 gate、试算触发、财务确认、callback 幂等与 PATCH。
+- 上传页写新附件台后，会按 `run_id/platform/shop/file_type` 自动镜像附件到旧任务台对应附件字段，保证现有 `task_runner` 无需重写即可读到卡片上传资料。
 - 更新 `app/main.py`：新增 `/cards/monthly-intake`、`/cards/test`、`/cards/test-samples`、`/cards/callback`、`/upload`；`/tasks/remind-monthly` 在 `CARD_WORKFLOW_ENABLED=true` 时发卡。
 - 更新 `app/feishu.py`：支持 App3 发卡/PATCH、Base 创建记录、上传附件、open_id -> union_id。
 - 更新 `app/writer.py`：输出 workbook 增加 `产品毛利_月度`、`产品毛利_季度` 两个 gate sheet。
