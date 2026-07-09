@@ -37,6 +37,15 @@ def _month_of(fields: dict) -> str:
     return m or ""
 
 
+def _month_filter(year_month: str) -> dict:
+    return {
+        "conjunction": "and",
+        "conditions": [
+            {"field_name": "月份", "operator": "is", "value": [year_month]},
+        ],
+    }
+
+
 async def ensure_month_rows(year_month: str | None = None) -> dict:
     """幂等建当月12行。该月已有任意行则跳过 (不重复建)。"""
     if not year_month:
@@ -46,7 +55,13 @@ async def ensure_month_rows(year_month: str | None = None) -> dict:
         month = now.month - 1 or 12
         year_month = f"{year}-{month:02d}"
 
-    existing = await feishu.bitable_search_records(config.TASK_APP_TOKEN, config.TASK_TABLE_ID)
+    existing = await feishu.bitable_search_records(
+        config.TASK_APP_TOKEN,
+        config.TASK_TABLE_ID,
+        filter_obj=_month_filter(year_month),
+        page_size=50,
+        field_names=["月份"],
+    )
     has = [r for r in existing if _month_of(r.get("fields", {})) == year_month]
     if has:
         return {"skipped": True, "year_month": year_month, "existing": len(has)}

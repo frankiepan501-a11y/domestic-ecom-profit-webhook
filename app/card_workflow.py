@@ -48,22 +48,41 @@ def _month_matches(record: dict, year_month: str) -> bool:
     return _ftext(record.get("fields", {}).get("月份")) == year_month
 
 
+def _month_filter(year_month: str) -> dict:
+    return {
+        "conjunction": "and",
+        "conditions": [
+            {"field_name": "月份", "operator": "is", "value": [year_month]},
+        ],
+    }
+
+
 async def _legacy_rows(year_month: str) -> list[dict]:
-    rows = await feishu.bitable_search_records(config.TASK_APP_TOKEN, config.TASK_TABLE_ID)
+    rows = await feishu.bitable_search_records(
+        config.TASK_APP_TOKEN,
+        config.TASK_TABLE_ID,
+        filter_obj=_month_filter(year_month),
+        page_size=50,
+        field_names=[
+            "任务标题", "数据类型", "月份", "平台", "店铺", "快递公司",
+            "订单明细", "退款明细", "平台费用", "广告/推广", "物流月结账单",
+            "责任人", "报表飞书链接", "任务状态",
+        ],
+    )
     return [r for r in rows if _month_matches(r, year_month)]
 
 
-async def _legacy_summary_record_id(year_month: str) -> str:
-    for rec in await _legacy_rows(year_month):
+async def _legacy_summary_record_id(year_month: str, rows: list[dict] | None = None) -> str:
+    for rec in rows if rows is not None else await _legacy_rows(year_month):
         f = rec.get("fields", {})
         if f.get("数据类型") == "月度报表汇总":
             return rec["record_id"]
     return ""
 
 
-async def _ensure_manifests(run_id: str, year_month: str) -> list[str]:
+async def _ensure_manifests(run_id: str, year_month: str, rows: list[dict] | None = None) -> list[str]:
     checklist: list[str] = []
-    rows = await _legacy_rows(year_month)
+    rows = rows if rows is not None else await _legacy_rows(year_month)
     for row in rows:
         f = row.get("fields", {})
         dtype = f.get("数据类型")
@@ -140,11 +159,14 @@ async def _send_card_to_union_targets(card: dict, targets: dict[str, str]) -> li
 async def send_monthly_intake(year_month: str | None = None, *, force: bool = False,
                               dry_run: bool = False, frankie_only: bool = False) -> dict:
     year_month = year_month or _prev_month()
-    await task_seeder.ensure_month_rows(year_month)
-    legacy_summary = await _legacy_summary_record_id(year_month)
+    rows = await _legacy_rows(year_month)
+    if not rows:
+        await task_seeder.ensure_month_rows(year_month)
+        rows = await _legacy_rows(year_month)
+    legacy_summary = await _legacy_summary_record_id(year_month, rows)
     run = await ledger.ensure_run(year_month, legacy_summary)
     run_id = _ftext(run.get("fields", {}).get("run_id")) or ledger.run_id_for_month(year_month)
-    checklist = await _ensure_manifests(run_id, year_month)
+    checklist = await _ensure_manifests(run_id, year_month, rows)
     card = cards.operation_submit_card(run_id, year_month, checklist)
     if dry_run:
         return {"dry_run": True, "run_id": run_id, "card": card, "checklist_count": len(checklist)}

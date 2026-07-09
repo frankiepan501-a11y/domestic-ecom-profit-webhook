@@ -44,11 +44,14 @@ async def bitable_get_record(app_token: str, table_id: str, record_id: str) -> d
 
 
 async def bitable_search_records(app_token: str, table_id: str, filter_obj: dict | None = None,
-                                 page_size: int = 100) -> list[dict]:
+                                 page_size: int = 100,
+                                 field_names: list[str] | None = None) -> list[dict]:
     """search records (POST /search)，返回 records 数组。"""
     body: dict[str, Any] = {"automatic_fields": False}
     if filter_obj:
         body["filter"] = filter_obj
+    if field_names:
+        body["field_names"] = field_names
     out: list[dict] = []
     page_token = None
     while True:
