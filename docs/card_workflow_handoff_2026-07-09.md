@@ -85,19 +85,20 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - `/cards/test-samples?year_month=2026-06&send=true` 给 Frankie 发送运营资料卡、P0 缺口卡、财务确认卡三类样例成功。
 - P0 缺口样例卡和财务样例卡的 callback 均返回 `patched_original_card=true`。
 - `CARD_WORKFLOW_ENABLED=true` 后，`/tasks/remind-monthly?force=true` 已走卡片路径并向运营负责人发出资料提交卡。
-- 2026-06 结算文件驱动链路已本地验证并输出测试报表：`https://u1wpma3xuhr.feishu.cn/sheets/Hbqrs1EGxhN6GwtK96PcktfenVe`。测试时设置 `REPORT_SUPPRESS_NOTIFY=1`，未通知运营/财务。
-- A/B 对账产物：`domestic_2026_06_ab_compare.xlsx`、`domestic_2026_06_ab_compare.md`。结果为 `BLOCKED_BY_P0`：天猫广告 9391.83、天猫纷岚负毛利、抖音顺丰 API fallback、小红书退款成本扣减、税务A_B核对 sheet 均 PASS；产品毛利、SKU成本、物流匹配、输出 sheet 规范均已对齐。
-- 当前剩余 P0 不是口径差异：京东纷岚/京东宝空缺订单结算明细、到账文件或无结算确认；小红书纷岚缺商品结算明细或无结算确认。京东纷岚人工基准有 `短信服务费 0.18`，需补来源文件或财务说明。
+- 2026-06 结算文件驱动链路已本地验证并输出测试报表：`https://u1wpma3xuhr.feishu.cn/sheets/ANKesGax1hnG2BtUgCaczfnFnLh`。测试时设置 `REPORT_SUPPRESS_NOTIFY=1`，未通知运营/财务。
+- 2026-07-09 晚从本地基准资料目录 `D:\Users\Administrator\Desktop\财务毛利报表计算资料\深圳奥迪尔\2026年6月` 追加补齐旧任务台和 ledger 附件：京东纷岚 `订单结算明细对账.csv`、京东宝空 `本月无结算明细.txt`、小红书纷岚 `本月无结算订单.txt`，以及对应无订单/无广告/退款证据。原始空 txt 上传时写入了最小说明内容，保留原文件名作为运营无数据确认。
+- A/B 对账产物：`domestic_2026_06_ab_compare.xlsx`、`domestic_2026_06_ab_compare.md`。结果为 `PASS`：天猫广告 9391.83、天猫纷岚负毛利、抖音顺丰 API fallback、小红书退款成本扣减、税务A_B核对 sheet 均 PASS；产品毛利、SKU成本、物流匹配、费用明细、缺口清单、输出 sheet 规范均已对齐。
+- 京东纷岚 `短信服务费 0.18` 已由 `2026-07-09_18403730_ctzQRJ8BQj9JF8zkCs5V_订单结算明细对账.csv` 读取到 3 笔 `0.06` 支出，并进入 `费用明细汇总` 和 `月度毛利试算`。
 
 ## 剩余风险和下一步
 
-P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 不能进入财务确认的阻塞不是结算口径，而是剩余资料证据未闭环：京东两店缺订单结算/到账文件或无结算确认，小红书纷岚缺商品结算明细或无结算确认。
+P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 A/B 已通过，可以进入财务确认卡测试/确认链路；淘宝、拼多多仍按用户决策暂缓，后续口径统一后单独补做。
 
 建议下一步：
 
-- P0：让运营补京东纷岚/京东宝空的订单结算明细、到账文件或无结算确认；京东纷岚还需解释/补齐 `短信服务费 0.18` 来源。
-- P0：让运营补小红书纷岚商品结算明细，或通过卡片确认本月无结算。
-- P0：补齐以上证据后重跑 `run_profit('recvoR2HF52Ppj')` 和 `tools/compare_202606_ab.py`；A/B 全 PASS 后才允许发送财务确认卡。
+- P0：发送/测试财务确认卡，确认卡展示本次输出包、A/B PASS、淘宝/拼多多暂缓例外和税务A_B核对摘要。
+- P0：财务确认后自动写输出报表台、归档状态和汇总索引；保留重复点击幂等验证。
+- P0：把本次“本地补件但卡片上传页未触发”的场景沉淀为运维动作：允许 Frankie/系统管理员从本地资料目录追加回填，不要求运营重新从 0 上传。
 - P1：把上传页附件按平台 parser 预检，失败写缺口例外台并发 P0 缺口卡。
 - P1：将 manifest 创建从逐条 create 优化为 batch_create，降低首次新月份发卡耗时。
 - P1：把财务确认后的汇总索引/归档写入做成独立可回放端点。
