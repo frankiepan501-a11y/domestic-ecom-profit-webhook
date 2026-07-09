@@ -26,11 +26,28 @@ PLATFORM_ORDER = {"天猫": 1, "抖音": 2, "小红书": 3, "拼多多": 4, "淘
 FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "平台费用": 3, "广告账单": 4, "物流账单": 5}
 NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "平台费用"}
 FILE_TYPE_KEYWORDS = {
-    "订单明细": ("订单明细", "订单", "order"),
+    "订单明细": ("订单明细", "订单", "exportorderlist", "orderlist", "结算订单", "order"),
     "退款明细": ("退款明细", "退款", "售后", "refund"),
-    "平台费用": ("平台费用", "平台费", "技术服务费", "服务费", "佣金", "commission"),
+    "平台费用": (
+        "平台费用", "平台费", "交易货款", "返点积分", "返还积分", "光合平台", "软件服务费",
+        "基础软件", "类目软件服务费", "天猫佣金", "跨境服务增值费", "淘金币",
+        "消费积分", "消费券", "合作费用", "服务费", "佣金", "commission",
+    ),
     "广告账单": ("广告账单", "广告", "推广", "消耗", "账户流水", "ad", "ads", "marketing"),
     "物流账单": ("物流账单", "物流", "快递", "月结", "顺丰", "中通", "极兔", "京东物流", "运费", "waybill"),
+}
+PLATFORM_ALIASES = {
+    "天猫": ("天猫", "tmall"),
+    "抖音": ("抖音", "douyin"),
+    "小红书": ("小红书", "xhs", "red"),
+    "拼多多": ("拼多多", "pdd"),
+    "淘宝": ("淘宝", "taobao"),
+    "京东": ("京东", "jd"),
+}
+BRAND_SHOP_ALIASES = {
+    "powkong": ("powkong", "宝空", "宝宝", "宝控"),
+    "funlab": ("funlab", "纷岚", "梵乐璞"),
+    "cube": ("正方体", "正方体电玩"),
 }
 
 TERMINAL_RUN_STATES = {
@@ -60,13 +77,13 @@ def _attachments(value: Any) -> list[dict]:
 def _manifest_attachments(fields: dict) -> list[dict]:
     atts = _attachments(fields.get("附件"))
     if atts:
-        return atts
+        return _merge_attachments([], atts)
     raw = _ftext(fields.get("file_token_json"))
     if raw:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
-                return [x for x in parsed if isinstance(x, dict)]
+                return _merge_attachments([], [x for x in parsed if isinstance(x, dict)])
         except Exception:
             return []
     return []
@@ -79,13 +96,17 @@ def _merge_attachments(existing: list[dict], new_items: list[dict]) -> list[dict
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or item.get("file_name") or "")
+        basename = _file_basename(name)
         token = str(item.get("file_token") or "")
-        key = f"name:{name}" if name else f"token:{token}"
+        key = f"name:{_norm(basename)}" if basename else f"token:{token}"
         if not key or key == "token:":
             continue
         if key not in merged:
             order.append(key)
-        merged[key] = item
+        next_item = dict(item)
+        if basename:
+            next_item["name"] = basename
+        merged[key] = next_item
     return [merged[k] for k in order]
 
 
@@ -104,6 +125,34 @@ def _file_basename(path: str) -> str:
 def _file_type_matches(file_type: str, path: str) -> bool:
     normalized = _norm(path)
     return any(_norm(k) in normalized for k in FILE_TYPE_KEYWORDS.get(file_type, (file_type,)))
+
+
+def _platform_matches(platform: str, normalized_path: str) -> bool:
+    aliases = PLATFORM_ALIASES.get(platform, (platform,))
+    return any(_norm(a) in normalized_path for a in aliases if a)
+
+
+def _shop_aliases(platform: str, shop: str) -> tuple[str, ...]:
+    aliases: list[str] = [shop]
+    text = f"{platform} {shop}".lower()
+    if "powkong" in text or "宝空" in text:
+        aliases.extend(BRAND_SHOP_ALIASES["powkong"])
+    if "funlab" in text or "纷岚" in text or "梵乐璞" in text:
+        aliases.extend(BRAND_SHOP_ALIASES["funlab"])
+    if "正方体" in text:
+        aliases.extend(BRAND_SHOP_ALIASES["cube"])
+    seen = set()
+    out = []
+    for alias in aliases:
+        key = _norm(alias)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(alias)
+    return tuple(out)
+
+
+def _shop_matches(platform: str, shop: str, normalized_path: str) -> bool:
+    return any(_norm(a) in normalized_path for a in _shop_aliases(platform, shop))
 
 
 def _manifest_sort_key(rec: dict) -> tuple:
@@ -1016,7 +1065,7 @@ async def _upload_files(files: list[UploadFile]) -> list[dict]:
         res = await feishu.drive_upload_bitable_file(_file_basename(original_name), content, config.LEDGER_APP_TOKEN)
         file_token = (res.get("data") or {}).get("file_token")
         if file_token:
-            uploaded.append({"file_token": file_token, "name": original_name})
+            uploaded.append({"file_token": file_token, "name": _file_basename(original_name)})
     return uploaded
 
 
@@ -1055,11 +1104,12 @@ def _match_manifest_for_file(path: str, manifests: list[dict]) -> dict:
         if file_type == "物流账单":
             candidates.append((10, manifest_id))
             continue
-        if _norm(shop) not in normalized:
+        if not _shop_matches(platform, shop, normalized):
             continue
         score = 20
-        if platform and _norm(platform) in normalized:
-            score += 5
+        if platform and _platform_matches(platform, normalized):
+            score += 10
+        score += min(len(_norm(shop)), 6)
         candidates.append((score, manifest_id))
     if not candidates:
         return {"status": "unmatched"}
