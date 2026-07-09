@@ -25,6 +25,7 @@ LOGISTICS_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type,
 PLATFORM_ORDER = {"天猫": 1, "抖音": 2, "小红书": 3, "拼多多": 4, "淘宝": 5, "京东": 6, "全平台": 99}
 FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "平台费用": 3, "广告账单": 4, "物流账单": 5}
 NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "平台费用"}
+DEFERABLE_SCOPE_PLATFORMS = {"淘宝", "拼多多"}
 FILE_TYPE_KEYWORDS = {
     "订单明细": ("订单明细", "订单", "exportorderlist", "orderlist", "结算订单", "order"),
     "退款明细": ("退款明细", "退款", "售后", "refund"),
@@ -1015,6 +1016,26 @@ async def handle_manifest_action(run_id: str, token: str, file_manifest_id: str,
         touched = await _mark_shop_no_settlement(run_id, platform, shop, note)
         await ledger.update_run(run_id, "资料初检中", "upload_page_no_settlement", f"{platform}/{shop} 已确认本月无结算")
         message = f"已记录 {platform}/{shop} 本月无结算，已同步关闭 {touched} 个该店铺结算资料项。"
+    elif action_name == "defer_platform_scope":
+        if platform not in DEFERABLE_SCOPE_PLATFORMS:
+            return {"ok": False, "error": "当前只允许淘宝/拼多多走本期暂缓口径；其他平台请补资料或走财务判断。"}
+        reason = note or f"{platform} 毛利报表口径未统一，{_ftext(f.get('月份'))} 暂缓纳入本期四平台试算，后续口径统一后补充。"
+        touched = await _defer_platform_scope(run_id, platform, reason)
+        gap = await ledger.create_gap(
+            run_id,
+            "平台口径暂缓",
+            platform,
+            _ftext(f.get("月份")),
+            reason,
+            p_level="P1",
+        )
+        await ledger.mark_gap(_ftext(gap.get("fields", {}).get("gap_id")), {
+            "处理结果": "本期暂缓，后续补充",
+            "是否可定稿": True,
+        })
+        await ledger.update_run(run_id, "资料初检中", "upload_page_defer_platform",
+                                f"{platform} 已标记为本期暂缓，不纳入本次试算")
+        message = f"已记录 {platform} 本期暂缓，已同步关闭 {touched} 个该平台资料项；后续口径统一后可单独补做。"
     elif action_name == "logistics_missing":
         if file_type != "物流账单":
             return {"ok": False, "error": "只有物流账单资料项可以提交暂缺说明"}
@@ -1162,6 +1183,25 @@ async def _mark_shop_no_settlement(run_id: str, platform: str, shop: str, note: 
     return touched
 
 
+async def _defer_platform_scope(run_id: str, platform: str, reason: str) -> int:
+    touched = 0
+    for rec in await ledger.manifests_for_run(run_id):
+        f = rec.get("fields", {})
+        if _ftext(f.get("平台")) != platform:
+            continue
+        manifest_id = _ftext(f.get("file_manifest_id"))
+        await ledger.mark_manifest(manifest_id, {
+            "状态": "已关闭",
+            "无数据确认": False,
+            "上传人": "upload_page",
+            "来源message_id": "upload_page",
+            "parser结果": _page_parser_result("defer_platform_scope", reason),
+        })
+        touched += 1
+    await _close_platform_gaps(run_id, platform, "本期暂缓，后续补充")
+    return touched
+
+
 async def _close_related_gaps(run_id: str, platform: str, shop: str, gap_type: str, result: str) -> None:
     for gap in await ledger.gaps_for_run(run_id):
         gf = gap.get("fields", {})
@@ -1171,6 +1211,17 @@ async def _close_related_gaps(run_id: str, platform: str, shop: str, gap_type: s
             continue
         evidence = _ftext(gf.get("证据"))
         if shop and shop not in evidence:
+            continue
+        await ledger.mark_gap(_ftext(gf.get("gap_id")), {
+            "处理结果": result,
+            "是否可定稿": True,
+        })
+
+
+async def _close_platform_gaps(run_id: str, platform: str, result: str) -> None:
+    for gap in await ledger.gaps_for_run(run_id):
+        gf = gap.get("fields", {})
+        if _ftext(gf.get("平台")) != platform:
             continue
         await ledger.mark_gap(_ftext(gf.get("gap_id")), {
             "处理结果": result,
@@ -1231,6 +1282,8 @@ def _manifest_row_html(rec: dict, run_id: str, token: str) -> str:
         actions.append(_action_form(run_id, token, mid, "confirm_no_settlement", "确认该店本月无结算", disabled=bool(atts)))
     elif file_type == "物流账单":
         actions.append(_action_form(run_id, token, mid, "logistics_missing", "暂缺账单，提交缺口说明", note=True, warn=True))
+    if platform in DEFERABLE_SCOPE_PLATFORMS and not _is_manifest_done(f):
+        actions.append(_action_form(run_id, token, mid, "defer_platform_scope", "口径未定，本期暂缓此平台", note=True, warn=True))
     actions.append(_action_form(run_id, token, mid, "note", "补充说明", note=True))
     return f"""
 <tr class="{row_class}">
