@@ -246,6 +246,51 @@ async def send_monthly_intake(year_month: str | None = None, *, force: bool = Fa
     return {"run_id": run_id, "year_month": year_month, "sent": sent, "targets": list(targets.values())}
 
 
+async def send_sample_cards(year_month: str | None = None, *, send: bool = False) -> dict:
+    """Build or send the three P0 card contracts to Frankie for smoke verification."""
+    year_month = year_month or _prev_month()
+    run_id = f"domestic-ecom-profit-smoke-{year_month}"
+    ops_card = cards.operation_submit_card(run_id, year_month, [
+        "京东/京东纷岚店 - 订单明细",
+        "京东/京东纷岚店 - 广告账单",
+        "物流月结账单(全公司) - 物流账单",
+    ])
+    gap_card = cards.p0_gap_card({
+        "fields": {
+            "gap_id": f"gap_smoke_{year_month.replace('-', '')}",
+            "run_id": run_id,
+            "平台": "京东",
+            "月份": year_month,
+            "P级": "P0",
+            "缺口类型": "ERP_SKU映射缺失",
+            "SKU/order/waybill": "商家编码为空或无法映射 ERP SKU",
+            "证据": "smoke: 订单明细第 12 行缺商家编码",
+            "影响金额": 0,
+            "可回放id": "smoke-replay-001",
+        }
+    })
+    finance_card = cards.finance_confirm_card({
+        "fields": {
+            "output_id": f"out_smoke_{year_month.replace('-', '')}",
+            "run_id": run_id,
+            "workbook_token": "smoke-workbook-token",
+            "涉税核对摘要": "smoke: 京东结算月、天猫账期、小红书退款扣减均已过 gate",
+            "财务决定": "",
+        }
+    }, {"fields": {"run_id": run_id, "期间": year_month}}, [])
+    sample_cards = {
+        "ops_submit": ops_card,
+        "p0_gap": gap_card,
+        "finance_confirm": finance_card,
+    }
+    if not send:
+        return {"dry_run": True, "run_id": run_id, "cards": sample_cards}
+    sent: dict[str, list[str]] = {}
+    for name, card in sample_cards.items():
+        sent[name] = await _send_card_to_union_targets(card, {config.FRANKIE_UNION_ID: "潘志聪"})
+    return {"run_id": run_id, "sent": sent}
+
+
 async def _create_missing_gaps(run_id: str, period: str) -> list[dict]:
     manifests = await ledger.manifests_for_run(run_id)
     existing = await ledger.gaps_for_run(run_id)

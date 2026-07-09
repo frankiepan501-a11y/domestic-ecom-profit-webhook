@@ -122,6 +122,15 @@ async def cards_test(year_month: str | None = None, send: bool = False,
         year_month, force=True, dry_run=not send, frankie_only=True)
 
 
+@app.post("/cards/test-samples")
+async def cards_test_samples(year_month: str | None = None, send: bool = False,
+                             authorization: str | None = Header(None)):
+    """P0 smoke: return or send ops/gap/finance sample cards to Frankie."""
+    _check_auth(authorization)
+    from . import card_workflow
+    return await card_workflow.send_sample_cards(year_month, send=send)
+
+
 @app.post("/cards/callback")
 async def cards_callback(req: dict, authorization: str | None = Header(None)):
     """Event Hub 转发 card.action.trigger 到这里。业务写入和 PATCH 在服务端幂等处理。"""
