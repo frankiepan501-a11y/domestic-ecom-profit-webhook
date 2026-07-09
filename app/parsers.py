@@ -233,16 +233,42 @@ def parse_tmall_ads(buf: bytes) -> list[dict]:
     header = rows[0]
     col = {h: i for i, h in enumerate(header)}
     out = []
+
+    def g(r, name, default=""):
+        idx = col.get(name, -1)
+        return r[idx] if 0 <= idx < len(r) else default
+
+    def n(v):
+        try:
+            return float(str(v or "0").replace(",", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
     for r in rows[1:]:
         if not r or not r[0]:
             continue
+        # 天猫/淘宝 0947 账户流水：广告消耗在“操作金额(元)”，不是常规推广报表的“花费”。
+        if "操作金额(元)" in col and ("交易类型" in col or "收支类型" in col):
+            typ = str(g(r, "交易类型")).strip()
+            direction = str(g(r, "收支类型")).strip()
+            is_spend = typ == "扣款" or direction == "支出"
+            out.append({
+                "date": g(r, "交易日期"),
+                "channel_id": g(r, "账户编号"),
+                "channel_name": g(r, "交易说明") or g(r, "备注"),
+                "spend": n(g(r, "操作金额(元)")) if is_spend else 0,
+                "sales": 0,
+                "orders": 0,
+                "source_type": "0947账户流水",
+            })
+            continue
         out.append({
-            "date": r[col.get("日期", 0)],
-            "channel_id": r[col.get("场景ID", 1)] if "场景ID" in col else "",
-            "channel_name": r[col.get("场景名字", 2)] if "场景名字" in col else "",
-            "spend": float(r[col.get("花费", -1)] or 0) if "花费" in col else 0,
-            "sales": float(r[col.get("总成交金额", -1)] or 0) if "总成交金额" in col else 0,
-            "orders": int(float(r[col.get("总成交笔数", -1)] or 0)) if "总成交笔数" in col else 0,
+            "date": g(r, "日期"),
+            "channel_id": g(r, "场景ID"),
+            "channel_name": g(r, "场景名字"),
+            "spend": n(g(r, "花费")) if "花费" in col else 0,
+            "sales": n(g(r, "总成交金额")) if "总成交金额" in col else 0,
+            "orders": int(n(g(r, "总成交笔数"))) if "总成交笔数" in col else 0,
         })
     return out
 
@@ -524,11 +550,17 @@ def parse_xhs_platform_fee(buf: bytes, source_name: str) -> list[dict]:
         return []
     header = rows[0]
     col = {h: i for i, h in enumerate(header) if h}
+    spend_idx = col.get("支出（元）")
+    desc_idx = col.get("交易类型描述")
+    if spend_idx is None:
+        # 新版“资金明细”用动账方向/动账金额，由 settlement_engine 读取；旧 parser 不猜列。
+        wb.close()
+        return []
     out = []
     for r in rows[1:]:
         if not r[0]:
             continue
-        spend = r[col.get("支出（元）", -1)]
+        spend = r[spend_idx] if spend_idx < len(r) else ""
         if not spend:
             continue
         try:
@@ -538,7 +570,7 @@ def parse_xhs_platform_fee(buf: bytes, source_name: str) -> list[dict]:
         if amount <= 0:
             continue
         out.append({
-            "fee_type": r[col.get("交易类型描述", -1)] or "其他",
+            "fee_type": (r[desc_idx] if desc_idx is not None and desc_idx < len(r) else "") or "其他",
             "amount": amount,
             "source": source_name,
         })

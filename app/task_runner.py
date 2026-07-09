@@ -10,7 +10,7 @@ import json
 import os
 import traceback
 from datetime import datetime
-from . import config, feishu, parsers, engine, writer, lingxing, sf_api
+from . import config, feishu, parsers, engine, writer, lingxing, sf_api, settlement_engine
 
 
 # v0.3: 全 9 店铺 (加抖音宝空 + 京东宝空, 京东 parser 重写支持费用流水按订单聚合)
@@ -145,11 +145,105 @@ async def _download_attachments(record: dict, kind_field: str) -> list[tuple[str
     return out
 
 
+def _scalar(value) -> str:
+    """Extract text/number from common Bitable value shapes."""
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("name") or item.get("value") or ""))
+            else:
+                parts.append(str(item))
+        return "".join(parts).strip()
+    if isinstance(value, dict):
+        if "value" in value:
+            inner = value.get("value")
+            if isinstance(inner, list):
+                return "".join(_scalar(x) for x in inner).strip()
+            return _scalar(inner)
+        return str(value.get("text") or value.get("name") or "")
+    return str(value)
+
+
+def _num(value) -> float:
+    import re
+    text = _scalar(value).replace(",", "").replace("¥", "").replace("￥", "").replace("元", "")
+    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    return float(m.group(0)) if m else 0.0
+
+
+async def _load_finance_cost_map(sku_set: set[str], lx_data: dict[str, dict]) -> dict[str, dict]:
+    """Cost priority: finance accounting cost > ERP cost > Lingxing cg_price."""
+    rows = await feishu.bitable_search_records(
+        config.COST_APP_TOKEN,
+        config.COST_TABLE_ID,
+        page_size=500,
+        field_names=["ERP SKU", "ERP品名", "采购成本(财务核算)", "采购成本(ERP)"],
+    )
+    cost_map: dict[str, dict] = {}
+    for rec in rows:
+        f = rec.get("fields", {})
+        sku = _scalar(f.get("ERP SKU")).strip().upper()
+        if not sku:
+            continue
+        fin = _num(f.get("采购成本(财务核算)"))
+        erp = _num(f.get("采购成本(ERP)"))
+        if fin > 0:
+            unit = fin
+            source = "采购成本(财务核算)"
+        elif erp > 0:
+            unit = erp
+            source = "采购成本(ERP)兜底"
+        else:
+            unit = 0.0
+            source = "成本缺失/为0"
+        cost_map[sku] = {
+            "unit_cost": unit,
+            "name": _scalar(f.get("ERP品名")),
+            "source": source,
+            "finance_cost": fin,
+            "erp_cost": erp,
+        }
+    for sku in sorted(sku_set):
+        key = str(sku or "").strip().upper()
+        if not key:
+            continue
+        current = cost_map.get(key)
+        if current and float(current.get("unit_cost") or 0) > 0:
+            continue
+        info = lx_data.get(key) or lx_data.get(sku) or {}
+        lx_cost = float(info.get("cost") or 0)
+        if lx_cost > 0:
+            cost_map[key] = {
+                "unit_cost": lx_cost,
+                "name": info.get("name", ""),
+                "source": "领星cg_price兜底",
+                "finance_cost": 0.0,
+                "erp_cost": 0.0,
+            }
+        elif key not in cost_map:
+            cost_map[key] = {
+                "unit_cost": 0.0,
+                "name": info.get("name", ""),
+                "source": "成本缺失/为0",
+                "finance_cost": 0.0,
+                "erp_cost": 0.0,
+            }
+    return cost_map
+
+
 async def collect_raw_data(year_month: str) -> dict:
     """v0.2: 每条数据带 platform/shop 标签. 白名单外店铺记入 skipped."""
     sources = await find_month_sources(year_month)
     raw = {"orders": [], "refunds": [], "plat_fees": [], "ads": [], "logistics": [],
-           "sku_set": set(), "errors": [], "skipped_shops": [], "shop_keys": set()}
+           "source_files": [], "sku_set": set(), "errors": [], "skipped_shops": [],
+           "shop_keys": set()}
 
     for rec in sources:
         f = rec["_fields_resolved"]
@@ -174,6 +268,15 @@ async def collect_raw_data(year_month: str) -> dict:
                                        ("平台费","平台费用"),("广告","广告/推广")]:
                 files = await _download_attachments(rec, attach_field)
                 for fname, buf in files:
+                    raw["source_files"].append({
+                        "platform": platform,
+                        "shop": shop,
+                        "kind": kind,
+                        "attach_field": attach_field,
+                        "fname": fname,
+                        "record_id": rec.get("record_id", ""),
+                        "buf": buf,
+                    })
                     res = parsers.detect_and_parse(fname, buf, year_month, kind, platform=platform)
                     if res["kind"] == "error":
                         raw["errors"].append(res["msg"])
@@ -206,6 +309,15 @@ async def collect_raw_data(year_month: str) -> dict:
             print(f"  → {title} (全公司池)")
             files = await _download_attachments(rec, "物流月结账单")
             for fname, buf in files:
+                raw["source_files"].append({
+                    "platform": "全平台",
+                    "shop": "全公司",
+                    "kind": "物流",
+                    "attach_field": "物流月结账单",
+                    "fname": fname,
+                    "record_id": rec.get("record_id", ""),
+                    "buf": buf,
+                })
                 res = parsers.detect_and_parse(fname, buf, year_month, "物流")
                 if res["kind"] == "error":
                     raw["errors"].append(res["msg"])
@@ -240,25 +352,44 @@ async def run_profit(record_id: str) -> dict:
         print(f"  订单 {len(raw['orders'])} / 退款 {len(raw['refunds'])} / "
               f"平台费 {len(raw['plat_fees'])} / 广告 {len(raw['ads'])} / "
               f"物流 {len(raw['logistics'])} / SKU {len(raw['sku_set'])} / "
-              f"跳过店铺 {len(raw['skipped_shops'])}")
+              f"原始附件 {len(raw['source_files'])} / 跳过店铺 {len(raw['skipped_shops'])}")
 
-        if not raw["orders"]:
-            raise ValueError("没找到任何订单数据")
+        if not raw["orders"] and not raw["source_files"]:
+            raise ValueError("没找到任何订单数据或原始附件")
+
+        # 结算文件驱动需要订单明细覆盖结算订单的实际下单区间；旧 parser 会按付款月过滤，
+        # 这里从原始文件池补齐 SKU/顺丰候选，避免结算月跨月订单被漏掉。
+        try:
+            raw["sku_set"].update(settlement_engine.extract_skus(raw, year_month))
+        except Exception as e:
+            print(f"  ⚠️ 从原始附件提取 SKU 失败: {e}")
 
         # 2. 调领星 API 拉所有 SKU 成本
         try:
-            print(f"  调领星 API 拉 {len(raw['sku_set'])} SKU 成本...")
+            print(f"  调领星 API 拉 {len(raw['sku_set'])} SKU 成本兜底...")
             lx_data = await lingxing.get_products(raw["sku_set"])
-            sku_costs = {sku: info["cost"] for sku, info in lx_data.items()}
-            sku_meta = lx_data
-            missing = raw["sku_set"] - set(sku_costs.keys())
-            if missing:
-                print(f"  ⚠️ 领星未找到 SKU: {missing}")
-            print(f"  领星拉到 {len(sku_costs)} SKU 成本")
+            print(f"  领星拉到 {len(lx_data)} SKU 成本")
         except Exception as e:
-            print(f"  ✗ 领星 API 失败: {e}, 用 0 成本占位")
-            sku_costs = {sku: 0 for sku in raw["sku_set"]}
-            sku_meta = {}
+            print(f"  ✗ 领星 API 失败: {e}, 继续只用财务成本台")
+            lx_data = {}
+
+        try:
+            print("  读取产品采购成本台：采购成本(财务核算) > 采购成本(ERP) > 领星cg_price")
+            cost_map = await _load_finance_cost_map(raw["sku_set"], lx_data)
+            sku_costs = {sku: info.get("unit_cost", 0) for sku, info in cost_map.items()}
+            sku_meta = {
+                sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0)}
+                for sku, info in cost_map.items()
+            }
+            print(f"  成本台可用 SKU {len(cost_map)}")
+        except Exception as e:
+            print(f"  ✗ 产品采购成本台读取失败: {e}, 降级使用领星成本")
+            cost_map = {
+                sku: {"unit_cost": info.get("cost", 0), "name": info.get("name", ""), "source": "领星cg_price兜底"}
+                for sku, info in lx_data.items()
+            }
+            sku_costs = {sku: info.get("unit_cost", 0) for sku, info in cost_map.items()}
+            sku_meta = {sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0)} for sku, info in cost_map.items()}
 
         sku_names = {sku: info.get("name", "") for sku, info in sku_meta.items()}
 
@@ -288,6 +419,10 @@ async def run_profit(record_id: str) -> dict:
                 for o in raw["orders"]
                 if o.get("tracking") and str(o["tracking"]).strip().startswith("SF")
             })
+            try:
+                sf_trackings = sorted(set(sf_trackings) | settlement_engine.extract_sf_waybills(raw, year_month))
+            except Exception as e:
+                print(f"  ⚠️ 从原始附件提取顺丰候选失败: {e}")
             if sf_trackings:
                 print(f"  调顺丰 API 反查 {len(sf_trackings)} 运单运费...")
                 try:
@@ -303,10 +438,11 @@ async def run_profit(record_id: str) -> dict:
                     print(f"  ✗ 顺丰 API 整批失败: {e}, 继续走 xlsx 路径")
                     raw["sf_api_errors"] = [{"_batch_error": str(e)}]
 
-        # 3. 跑 engine
+        # 3. 跑旧 engine 作兼容输出，同时跑结算文件驱动 engine 作为财务签核口径
         result = engine.compute(raw["orders"], raw["refunds"], raw["plat_fees"],
                                 raw["ads"], raw["logistics"], sku_costs, sku_names,
                                 year_month=year_month)
+        settlement = settlement_engine.compute(raw, cost_map, year_month)
 
         # 4. 创建新表
         token, sm = await writer.create_report_spreadsheet(year_month)
@@ -332,24 +468,32 @@ async def run_profit(record_id: str) -> dict:
                          f"v0.2 P2 仅支持天猫(POWKONG+纷岚). 跳过 {len(raw['skipped_shops'])} 店铺",
                          0, "P3 抖音 / P4 小红书 / P5 京东"])
         await writer.write_result_sheets(token, sm, year_month, result, extra_alerts=extra)
+        await writer.write_settlement_sheets(token, sm, settlement)
 
         # 5. 回填
         finished_ms = int(datetime.now().timestamp() * 1000)
 
-        # 全店汇总
-        all_paid = sum(st["paid"] for st in result["shop_totals"].values())
-        all_refund = sum(st["refund_amt"] for st in result["shop_totals"].values())
-        all_gross = sum(st["paid"] - st["refund_amt"] - st["plat"] - st["ad"]
-                        - st["cost"] - st["log_amt"]
-                        for st in result["shop_totals"].values())
-        net = all_paid - all_refund
-        gross_rate = all_gross / net * 100 if net else 0
+        # 全店汇总：优先用结算文件驱动的财务签核口径
+        if settlement.get("monthly_rows"):
+            all_paid = sum(float(r[6] or 0) for r in settlement["monthly_rows"])
+            all_refund = sum(float(r[7] or 0) for r in settlement["monthly_rows"])
+            net = sum(float(r[8] or 0) for r in settlement["monthly_rows"])
+            all_gross = sum(float(r[14] or 0) for r in settlement["monthly_rows"])
+            gross_rate = all_gross / net * 100 if net else 0
+        else:
+            all_paid = sum(st["paid"] for st in result["shop_totals"].values())
+            all_refund = sum(st["refund_amt"] for st in result["shop_totals"].values())
+            all_gross = sum(st["paid"] - st["refund_amt"] - st["plat"] - st["ad"]
+                            - st["cost"] - st["log_amt"]
+                            for st in result["shop_totals"].values())
+            net = all_paid - all_refund
+            gross_rate = all_gross / net * 100 if net else 0
 
         await update_status(record_id, {
             "任务状态": "✅已完成",
             "计算完成时间": finished_ms,
             "报表飞书链接": {"link": url, "text": f"(AI)国内电商毛利表-{year_month}"},
-            "错误日志": (f"店铺{len(raw['shop_keys'])} | 销售{all_paid:.2f} | "
+            "错误日志": (f"结算文件驱动 | 店铺{len(set(r[2] for r in settlement.get('monthly_rows', [])) or raw['shop_keys'])} | 销售{all_paid:.2f} | "
                        f"净销售{net:.2f} | 毛利{all_gross:.2f} ({gross_rate:.1f}%)"
                        + (f" | 跳过{len(raw['skipped_shops'])}店" if raw["skipped_shops"] else "")),
         })

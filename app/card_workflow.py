@@ -16,6 +16,7 @@ from . import cards, config, feishu, ledger, task_runner, task_seeder
 SHOP_FILE_FIELDS = [
     ("订单明细", "订单明细", True),
     ("退款明细", "退款明细", True),
+    ("平台费用", "当月结算账单", True),
     ("平台费用", "平台费用", True),
     ("广告/推广", "广告账单", True),
 ]
@@ -23,16 +24,26 @@ LOGISTICS_FILE_FIELDS = [("物流月结账单", "物流账单", True)]
 SHOP_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in SHOP_FILE_FIELDS}
 LOGISTICS_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in LOGISTICS_FILE_FIELDS}
 PLATFORM_ORDER = {"天猫": 1, "抖音": 2, "小红书": 3, "拼多多": 4, "淘宝": 5, "京东": 6, "全平台": 99}
-FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "平台费用": 3, "广告账单": 4, "物流账单": 5}
-NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "平台费用"}
+FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "当月结算账单": 3, "平台费用": 4, "广告账单": 5, "物流账单": 6}
+NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "当月结算账单", "平台费用"}
 DEFERABLE_SCOPE_PLATFORMS = {"淘宝", "拼多多"}
+SETTLEMENT_FILE_KEYWORDS = (
+    "当月结算账单", "结算账单", "结算订单", "交易货款", "商品结算明细",
+    "订单结算明细", "订单结算明细对账", "货款明细", "settlement", "settle",
+)
 FILE_TYPE_KEYWORDS = {
     "订单明细": ("订单明细", "订单", "exportorderlist", "orderlist", "结算订单", "order"),
     "退款明细": ("退款明细", "退款", "售后", "refund"),
+    "当月结算账单": (
+        "当月结算账单", "结算账单", "结算订单", "交易货款", "商品结算明细",
+        "订单结算明细", "订单结算明细对账", "货款明细", "到账", "settlement",
+        "settle",
+    ),
     "平台费用": (
-        "平台费用", "平台费", "交易货款", "返点积分", "返还积分", "光合平台", "软件服务费",
+        "平台费用", "平台费", "返点积分", "返还积分", "光合平台", "软件服务费",
         "基础软件", "类目软件服务费", "天猫佣金", "跨境服务增值费", "淘金币",
-        "消费积分", "消费券", "合作费用", "服务费", "佣金", "commission",
+        "消费积分", "消费券", "合作费用", "服务费", "佣金", "动账", "资金明细",
+        "平台支出", "权益保险", "commission",
     ),
     "广告账单": ("广告账单", "广告", "推广", "消耗", "账户流水", "ad", "ads", "marketing"),
     "物流账单": ("物流账单", "物流", "快递", "月结", "顺丰", "中通", "极兔", "京东物流", "运费", "waybill"),
@@ -126,6 +137,8 @@ def _file_basename(path: str) -> str:
 
 def _file_type_matches(file_type: str, path: str) -> bool:
     normalized = _norm(path)
+    if file_type == "订单明细" and any(_norm(k) in normalized for k in SETTLEMENT_FILE_KEYWORDS):
+        return False
     return any(_norm(k) in normalized for k in FILE_TYPE_KEYWORDS.get(file_type, (file_type,)))
 
 
@@ -1391,13 +1404,22 @@ async def _mirror_uploaded_files_to_legacy(manifest: dict, uploaded: list[dict])
     field = pointer.get("field")
     if not record_id or not field:
         return {"ok": False, "reason": "legacy_pointer_not_found"}
+    existing: list[dict] = []
+    try:
+        current = await feishu.bitable_get_record(config.TASK_APP_TOKEN, config.TASK_TABLE_ID, record_id)
+        current_fields = ((current.get("data") or {}).get("record") or {}).get("fields") or {}
+        existing = _attachments(current_fields.get(field))
+    except Exception:
+        existing = []
+    merged = _merge_attachments(existing, uploaded)
     res = await feishu.bitable_update_record(config.TASK_APP_TOKEN, config.TASK_TABLE_ID, record_id, {
-        field: uploaded,
+        field: merged,
     })
     return {
         "ok": res.get("code") == 0,
         "record_id": record_id,
         "field": field,
+        "attachment_count": len(merged),
         "response_code": res.get("code"),
         "response_msg": res.get("msg"),
     }

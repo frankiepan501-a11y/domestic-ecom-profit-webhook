@@ -3,3 +3,6 @@ __pycache__/
 .env
 .venv/
 *.log
+tmp_auto_*_values.xlsx
+domestic_*_ab_compare.xlsx
+domestic_*_ab_compare.md

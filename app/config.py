@@ -13,6 +13,10 @@ FEISHU_EVENT_APP_SECRET = os.getenv("FEISHU_EVENT_APP_SECRET", "")
 TASK_APP_TOKEN = os.getenv("TASK_APP_TOKEN", "IKyGb1jydaZW7msBzAicViiWngg")
 TASK_TABLE_ID = os.getenv("TASK_TABLE_ID", "tblMYHXRHZ0GaqMh")
 
+# 产品采购成本台：毛利报表成本单一优先源
+COST_APP_TOKEN = os.getenv("COST_APP_TOKEN", "P9awbhG9faFstxsO1KZc9b9Qnxb")
+COST_TABLE_ID = os.getenv("COST_TABLE_ID", "tblNFHqKiob49GNf")
+
 # 国内电商毛利报表卡片化 ledger (Base 只做系统账本, 人不再手动改任务台状态)
 LEDGER_APP_TOKEN = os.getenv("LEDGER_APP_TOKEN", TASK_APP_TOKEN)
 LEDGER_RUN_TABLE_ID = os.getenv("LEDGER_RUN_TABLE_ID", "tblIGDjnDtoceL6F")

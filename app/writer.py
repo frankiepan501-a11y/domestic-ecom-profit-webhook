@@ -18,8 +18,16 @@ SHEET_DEFS = [
     ("10_毛利结果表", 1000, 28),
     ("11_店铺汇总看板", 200, 14),
     ("12_异常预警", 500, 9),
+    ("月度毛利试算", 500, 20),
     ("产品毛利_月度", 1000, 28),
     ("产品毛利_季度", 1000, 28),
+    ("SKU成本明细", 5000, 10),
+    ("物流匹配明细", 5000, 12),
+    ("费用明细汇总", 5000, 9),
+    ("缺口清单", 1000, 9),
+    ("资料清单审计", 1000, 7),
+    ("口径说明", 200, 2),
+    ("税务A_B核对", 1000, 9),
 ]
 
 HEADERS = {
@@ -35,8 +43,16 @@ HEADERS = {
     "10_毛利结果表": ['月份','平台','店铺','ERP_SKU(=商家编码)','标准产品名称','品牌','产品负责人','销量','退款数量(订单表口径)','净销量','销售额(买家应付货款)','平台佣金','基础软件服务费','营销托管费','消费券代扣','其他平台费','平台费合计','推广/广告费','退款金额','采购成本(含包材)','物流成本','物流来源标记','净销售额','毛利额','毛利率','售后损耗占比','平台费占比'],
     "11_店铺汇总看板": ['平台','店铺','品牌','SKU 数','总销量','净销量','销售额(应付货款)','净销售额','平台费合计','广告费合计','采购成本','物流成本','毛利额','毛利率'],
     "12_异常预警": ['异常类型','严重度','平台','店铺','ERP_SKU/单号','描述','影响金额','处理建议'],
+    "月度毛利试算": ['月份','平台','店铺','主体','销售订单数','销量','销售额(RMB)','退款(RMB)','净销售额(RMB)','平台费用(RMB)','广告费(RMB)','采购成本(RMB)','尾程费用(RMB)','其他费用(RMB)','试算毛利(RMB)','试算毛利率','结算回款/净回款(RMB)','P0缺口数','P1注意项','状态'],
     "产品毛利_月度": ['月份','平台','店铺','ERP_SKU(=商家编码)','标准产品名称','品牌','产品负责人','销量','退款数量(订单表口径)','净销量','销售额(买家应付货款)','平台佣金','基础软件服务费','营销托管费','消费券代扣','其他平台费','平台费合计','推广/广告费','退款金额','采购成本(含包材)','物流成本','物流来源标记','净销售额','毛利额','毛利率','售后损耗占比','平台费占比'],
     "产品毛利_季度": ['月份','平台','店铺','ERP_SKU(=商家编码)','标准产品名称','品牌','产品负责人','销量','退款数量(订单表口径)','净销量','销售额(买家应付货款)','平台佣金','基础软件服务费','营销托管费','消费券代扣','其他平台费','平台费合计','推广/广告费','退款金额','采购成本(含包材)','物流成本','物流来源标记','净销售额','毛利额','毛利率','售后损耗占比','平台费占比'],
+    "SKU成本明细": ['平台','店铺','月份','订单号','ERP_SKU','品名','净成本数量','单件采购成本','采购成本','成本来源'],
+    "物流匹配明细": ['平台','店铺','月份','订单号','子订单号','运单号','承运商','分摊尾程费用','账单文件/API','账单sheet','来源','状态'],
+    "费用明细汇总": ['平台','店铺','月份','来源文件','费用类别','订单号','金额','取数字段','备注'],
+    "缺口清单": ['P级','平台','店铺','月份','类别','对象','问题','影响','建议动作'],
+    "资料清单审计": ['平台','店铺','资料类型','文件名','记录数/匹配数','状态','备注'],
+    "口径说明": ['主题','说明'],
+    "税务A_B核对": ['平台','店铺','月份','资料文件','资料类型','记录数','读取状态','差异/备注','财务确认建议'],
 }
 
 
@@ -320,6 +336,41 @@ async def write_result_sheets(token: str, sm: dict, year_month: str, result: dic
         alerts.extend(extra_alerts)
     if alerts:
         await _batch_write(token, sm["12_异常预警"], alerts)
+
+
+async def write_settlement_sheets(token: str, sm: dict, settlement: dict):
+    """Write finance-confirmation sheets produced by settlement_engine.
+
+    These sheets intentionally use the same surface as the manual A/B baseline.
+    Product sheets overwrite the legacy v0.2 headers because the finance gate
+    cares about the final sign-off contract, not the internal old formula sheet.
+    """
+    mapping = {
+        "月度毛利试算": settlement.get("monthly_rows", []),
+        "产品毛利_月度": settlement.get("product_rows", []),
+        "产品毛利_季度": settlement.get("product_rows", []),
+        "SKU成本明细": settlement.get("cost_rows", []),
+        "物流匹配明细": settlement.get("log_rows", []),
+        "费用明细汇总": settlement.get("fee_rows", []),
+        "缺口清单": settlement.get("gap_rows", []),
+        "资料清单审计": settlement.get("source_rows", []),
+        "口径说明": settlement.get("note_rows", []),
+        "税务A_B核对": settlement.get("tax_rows", []),
+    }
+    headers = settlement.get("headers", {})
+    value_ranges = []
+    for sheet_name, rows in mapping.items():
+        if sheet_name not in sm:
+            continue
+        hdr = headers.get(sheet_name) or HEADERS.get(sheet_name)
+        if hdr:
+            sid = sm[sheet_name]
+            value_ranges.append({"range": f"{sid}!A1:{_col(len(hdr))}1", "values": [hdr]})
+    if value_ranges:
+        await feishu.sheets_values_batch_update(token, value_ranges)
+    for sheet_name, rows in mapping.items():
+        if sheet_name in sm and rows:
+            await _batch_write(token, sm[sheet_name], rows)
 
 
 _BRAND_PREFIX = {
