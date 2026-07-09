@@ -469,6 +469,7 @@ async def send_open_gap_cards(run_id: str, *, frankie_only: bool = False) -> lis
 
 async def initial_gate_and_maybe_run(run_id: str, period: str) -> dict:
     await _create_missing_gaps(run_id, period)
+    await _close_resolved_missing_gaps(run_id)
     open_gaps = await ledger.open_p0_gaps(run_id)
     if open_gaps:
         await ledger.update_run(run_id, "P0待补件", "initial_gate",
@@ -1225,6 +1226,37 @@ async def _close_platform_gaps(run_id: str, platform: str, result: str) -> None:
             continue
         await ledger.mark_gap(_ftext(gf.get("gap_id")), {
             "处理结果": result,
+            "是否可定稿": True,
+        })
+
+
+async def _close_resolved_missing_gaps(run_id: str) -> None:
+    resolved: set[tuple[str, str, str]] = set()
+    for rec in await ledger.manifests_for_run(run_id):
+        f = rec.get("fields", {})
+        if not _is_manifest_done(f):
+            continue
+        platform = _ftext(f.get("平台"))
+        shop = _ftext(f.get("店铺"))
+        file_type = _ftext(f.get("文件类型"))
+        if file_type == "广告账单":
+            resolved.add(("广告证据缺失", platform, f"{platform}/{shop} 未提交广告账单，也未确认本月无广告消耗"))
+        elif file_type != "物流账单":
+            resolved.add(("其他", platform, f"{platform}/{shop} 缺少 {file_type}"))
+
+    if not resolved:
+        return
+    for gap in await ledger.gaps_for_run(run_id):
+        gf = gap.get("fields", {})
+        key = (
+            _ftext(gf.get("缺口类型")),
+            _ftext(gf.get("平台")),
+            _ftext(gf.get("证据")),
+        )
+        if key not in resolved:
+            continue
+        await ledger.mark_gap(_ftext(gf.get("gap_id")), {
+            "处理结果": "已补文件",
             "是否可定稿": True,
         })
 
