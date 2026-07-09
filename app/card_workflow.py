@@ -22,6 +22,16 @@ SHOP_FILE_FIELDS = [
 LOGISTICS_FILE_FIELDS = [("物流月结账单", "物流账单", True)]
 SHOP_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in SHOP_FILE_FIELDS}
 LOGISTICS_LEGACY_FIELD_BY_TYPE = {file_type: old_field for old_field, file_type, _ in LOGISTICS_FILE_FIELDS}
+PLATFORM_ORDER = {"天猫": 1, "抖音": 2, "小红书": 3, "拼多多": 4, "淘宝": 5, "京东": 6, "全平台": 99}
+FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "平台费用": 3, "广告账单": 4, "物流账单": 5}
+NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "平台费用"}
+FILE_TYPE_KEYWORDS = {
+    "订单明细": ("订单明细", "订单", "order"),
+    "退款明细": ("退款明细", "退款", "售后", "refund"),
+    "平台费用": ("平台费用", "平台费", "技术服务费", "服务费", "佣金", "commission"),
+    "广告账单": ("广告账单", "广告", "推广", "消耗", "账户流水", "ad", "ads", "marketing"),
+    "物流账单": ("物流账单", "物流", "快递", "月结", "顺丰", "中通", "极兔", "京东物流", "运费", "waybill"),
+}
 
 TERMINAL_RUN_STATES = {
     "本期无结算已确认",
@@ -45,6 +55,63 @@ def _ftext(value: Any) -> str:
 
 def _attachments(value: Any) -> list[dict]:
     return value if isinstance(value, list) else []
+
+
+def _manifest_attachments(fields: dict) -> list[dict]:
+    atts = _attachments(fields.get("附件"))
+    if atts:
+        return atts
+    raw = _ftext(fields.get("file_token_json"))
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [x for x in parsed if isinstance(x, dict)]
+        except Exception:
+            return []
+    return []
+
+
+def _merge_attachments(existing: list[dict], new_items: list[dict]) -> list[dict]:
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for item in existing + new_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("file_name") or "")
+        token = str(item.get("file_token") or "")
+        key = f"name:{name}" if name else f"token:{token}"
+        if not key or key == "token:":
+            continue
+        if key not in merged:
+            order.append(key)
+        merged[key] = item
+    return [merged[k] for k in order]
+
+
+def _norm(value: str) -> str:
+    drop = " \t\r\n/_-—·.（）()[]【】{}:：,，;；"
+    text = value.lower()
+    for ch in drop:
+        text = text.replace(ch, "")
+    return text
+
+
+def _file_basename(path: str) -> str:
+    return path.replace("\\", "/").split("/")[-1] or "upload.bin"
+
+
+def _file_type_matches(file_type: str, path: str) -> bool:
+    normalized = _norm(path)
+    return any(_norm(k) in normalized for k in FILE_TYPE_KEYWORDS.get(file_type, (file_type,)))
+
+
+def _manifest_sort_key(rec: dict) -> tuple:
+    f = rec.get("fields", {})
+    platform = _ftext(f.get("平台"))
+    shop = _ftext(f.get("店铺"))
+    file_type = _ftext(f.get("文件类型"))
+    return (PLATFORM_ORDER.get(platform, 50), shop, FILE_TYPE_ORDER.get(file_type, 50), file_type)
 
 
 def _month_matches(record: dict, year_month: str) -> bool:
@@ -655,32 +722,129 @@ async def upload_page(run_id: str, token: str) -> str:
     if token != ledger.upload_token(run_id, "run"):
         return "<h3>Invalid upload token</h3>"
     manifests = await ledger.manifests_for_run(run_id)
-    options = []
-    for rec in manifests:
-        f = rec.get("fields", {})
-        mid = html.escape(_ftext(f.get("file_manifest_id")))
-        label = html.escape(
-            f"{_ftext(f.get('平台'))}/{_ftext(f.get('店铺'))} - {_ftext(f.get('文件类型'))} - {_ftext(f.get('状态'))}"
-        )
-        if mid:
-            options.append(f'<option value="{mid}">{label}</option>')
-    if not options:
-        options.append('<option value="">未找到资料清单，请先发起 run</option>')
+    manifests = sorted(manifests, key=_manifest_sort_key)
+    rows = [_manifest_row_html(rec, run_id, token) for rec in manifests]
+    total = len(manifests)
+    done = sum(1 for rec in manifests if _is_manifest_done(rec.get("fields", {})))
+    pending = total - done
     safe_run = html.escape(run_id)
+    safe_token = html.escape(token)
     return f"""
 <!doctype html>
-<html><head><meta charset="utf-8"><title>国内电商资料上传</title></head>
-<body style="font-family:Arial, sans-serif; max-width:760px; margin:32px auto; line-height:1.5;">
-<h2>国内电商毛利报表资料上传</h2>
-<p><b>run_id:</b> {safe_run}</p>
-<p>选择要补充的资料项并上传。系统会自动写附件台和状态，运营无需进入任务台或 Base 改状态。</p>
-<form method="post" enctype="multipart/form-data" action="/upload">
-  <input type="hidden" name="run_id" value="{safe_run}">
-  <input type="hidden" name="token" value="{html.escape(token)}">
-  <p><label>资料项<br><select name="file_manifest_id" style="width:100%; padding:8px;" required>{''.join(options)}</select></label></p>
-  <p><label>选择文件<br><input type="file" name="files" multiple required></label></p>
-  <p><button type="submit" style="padding:8px 14px;">上传并写入附件台</button></p>
-</form>
+<html><head><meta charset="utf-8"><title>国内电商资料上传</title>
+<style>
+  :root {{ --ink:#172033; --muted:#667085; --line:#d8dee8; --panel:#f7f9fc; --blue:#1d5cff; --green:#137333; --red:#b42318; --amber:#9a6700; }}
+  * {{ box-sizing:border-box; }}
+  body {{ font-family:"Microsoft YaHei", "Segoe UI", sans-serif; color:var(--ink); margin:0; background:#fff; }}
+  main {{ max-width:1180px; margin:28px auto 44px; padding:0 22px; }}
+  h1 {{ font-size:24px; margin:0 0 8px; letter-spacing:0; }}
+  p {{ margin:6px 0; }}
+  .topbar {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:18px; }}
+  .meta {{ color:var(--muted); font-size:13px; }}
+  .summary {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }}
+  .pill {{ border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-size:12px; background:#fff; }}
+  .panel {{ border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:14px; margin:14px 0; }}
+  .panel h2 {{ font-size:16px; margin:0 0 8px; }}
+  .batch-row {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
+  table {{ width:100%; border-collapse:collapse; table-layout:fixed; border:1px solid var(--line); }}
+  th, td {{ border-bottom:1px solid var(--line); padding:10px 8px; vertical-align:top; font-size:13px; }}
+  th {{ background:#eef3fb; text-align:left; font-weight:700; }}
+  tr.done {{ background:#f6fff8; }}
+  tr.pending {{ background:#fff; }}
+  tr.blocked {{ background:#fff9ef; }}
+  .status {{ display:inline-block; border-radius:999px; padding:3px 8px; font-size:12px; border:1px solid var(--line); background:#fff; white-space:nowrap; }}
+  .status.done {{ color:var(--green); border-color:#b9e2c1; background:#ecfdf3; }}
+  .status.pending {{ color:#344054; }}
+  .status.blocked {{ color:var(--amber); border-color:#f0d28a; background:#fff8df; }}
+  .files {{ color:var(--muted); line-height:1.45; overflow-wrap:anywhere; }}
+  .actions {{ display:grid; gap:7px; }}
+  .inline-form {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }}
+  input[type=file] {{ max-width:230px; }}
+  input[type=text] {{ min-width:190px; padding:6px 8px; border:1px solid var(--line); border-radius:6px; }}
+  button {{ border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }}
+  button.primary {{ background:var(--blue); color:#fff; border-color:var(--blue); }}
+  button.warn {{ color:var(--amber); border-color:#f0d28a; background:#fffaf0; }}
+  button:disabled {{ cursor:not-allowed; opacity:.48; }}
+  .hint {{ color:var(--muted); font-size:12px; }}
+  .danger {{ color:var(--red); }}
+  #batchResult {{ margin-top:10px; font-size:13px; white-space:pre-wrap; }}
+  @media (max-width: 860px) {{
+    .topbar {{ display:block; }}
+    table, thead, tbody, th, td, tr {{ display:block; }}
+    thead {{ display:none; }}
+    tr {{ border:1px solid var(--line); margin:10px 0; border-radius:8px; overflow:hidden; }}
+    td {{ border-bottom:0; }}
+    td::before {{ content:attr(data-label); display:block; font-weight:700; margin-bottom:4px; color:#344054; }}
+  }}
+</style></head>
+<body>
+<main>
+  <div class="topbar">
+    <div>
+      <h1>国内电商毛利报表资料工作台</h1>
+      <p class="meta"><b>run_id:</b> {safe_run}</p>
+      <p class="meta">Base 只做 ledger；这里逐项上传或确认无数据，运营无需进入任务台改状态。</p>
+      <div class="summary">
+        <span class="pill">资料项 {total}</span>
+        <span class="pill">已闭环 {done}</span>
+        <span class="pill">待处理 {pending}</span>
+      </div>
+    </div>
+    <form method="post" action="/upload/submit">
+      <input type="hidden" name="run_id" value="{safe_run}">
+      <input type="hidden" name="token" value="{safe_token}">
+      <button class="primary" type="submit">提交初检</button>
+    </form>
+  </div>
+
+  <section class="panel">
+    <h2>文件夹批量上传</h2>
+    <p class="hint">建议文件夹或文件名包含“平台 / 店铺 / 文件类型”。能精确匹配的文件会自动写入对应资料项；无法匹配的文件会列出来，不会静默入账。</p>
+    <form id="batchForm" class="batch-row">
+      <input type="hidden" name="run_id" value="{safe_run}">
+      <input type="hidden" name="token" value="{safe_token}">
+      <input id="folderInput" type="file" webkitdirectory directory multiple required>
+      <button class="primary" type="submit">上传文件夹并自动归类</button>
+      <span class="hint">示例：2026-06/天猫/POWKONG旗舰店/订单明细.xlsx</span>
+    </form>
+    <div id="batchResult"></div>
+  </section>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:12%;">平台</th>
+        <th style="width:16%;">店铺</th>
+        <th style="width:12%;">资料项</th>
+        <th style="width:12%;">状态</th>
+        <th style="width:22%;">已上传/证据</th>
+        <th style="width:26%;">操作</th>
+      </tr>
+    </thead>
+    <tbody>{''.join(rows) if rows else '<tr><td colspan="6">未找到资料清单，请先发起 run。</td></tr>'}</tbody>
+  </table>
+</main>
+<script>
+const form = document.getElementById('batchForm');
+const out = document.getElementById('batchResult');
+form.addEventListener('submit', async (event) => {{
+  event.preventDefault();
+  const input = document.getElementById('folderInput');
+  if (!input.files.length) return;
+  const fd = new FormData();
+  fd.append('run_id', form.querySelector('input[name=run_id]').value);
+  fd.append('token', form.querySelector('input[name=token]').value);
+  for (const file of input.files) {{
+    fd.append('files', file, file.webkitRelativePath || file.name);
+  }}
+  out.textContent = '上传中，请勿关闭页面...';
+  const resp = await fetch('/upload/batch', {{ method: 'POST', body: fd }});
+  const text = await resp.text();
+  document.open();
+  document.write(text);
+  document.close();
+}});
+</script>
 </body></html>
 """
 
@@ -692,20 +856,181 @@ async def handle_upload(run_id: str, token: str, file_manifest_id: str,
     manifest = await ledger.find_first(ledger.FILE_TABLE, "file_manifest_id", file_manifest_id)
     if not manifest:
         return {"ok": False, "error": "file_manifest_id not found"}
+    uploaded = await _upload_files(files)
+    if not uploaded:
+        return {"ok": False, "error": "no file uploaded"}
+    merged, legacy_mirror = await _store_manifest_upload(manifest, uploaded)
+    await ledger.update_run(run_id, "资料初检中", "upload_page", "运营已通过上传页补充资料")
+    await _write_page_audit(
+        "upload_file",
+        run_id,
+        file_manifest_id,
+        before=manifest.get("fields", {}),
+        after={"uploaded": uploaded, "merged_count": len(merged), "legacy_mirror": legacy_mirror},
+        idempotency_suffix=ledger.payload_hash({"uploaded": uploaded, "ts": ledger.now_ms()})[:16],
+    )
+    return {"ok": True, "file_manifest_id": file_manifest_id, "uploaded": uploaded,
+            "attachments": merged, "legacy_mirror": legacy_mirror}
+
+
+async def handle_batch_upload(run_id: str, token: str, files: list[UploadFile]) -> dict:
+    if token != ledger.upload_token(run_id, "run"):
+        return {"ok": False, "error": "invalid token"}
+    manifests = await ledger.manifests_for_run(run_id)
+    by_id = {_ftext(r.get("fields", {}).get("file_manifest_id")): r for r in manifests}
+    grouped: dict[str, list[UploadFile]] = {}
+    unmatched: list[str] = []
+    ambiguous: list[str] = []
+    for f in files:
+        match = _match_manifest_for_file(f.filename or "", manifests)
+        if match.get("status") == "matched":
+            grouped.setdefault(match["file_manifest_id"], []).append(f)
+        elif match.get("status") == "ambiguous":
+            ambiguous.append(f.filename or "upload.bin")
+        else:
+            unmatched.append(f.filename or "upload.bin")
+
+    uploaded_groups: list[dict] = []
+    for manifest_id, file_group in grouped.items():
+        manifest = by_id.get(manifest_id)
+        if not manifest:
+            continue
+        uploaded = await _upload_files(file_group)
+        if not uploaded:
+            continue
+        merged, legacy_mirror = await _store_manifest_upload(manifest, uploaded)
+        mf = manifest.get("fields", {})
+        uploaded_groups.append({
+            "file_manifest_id": manifest_id,
+            "label": f"{_ftext(mf.get('平台'))}/{_ftext(mf.get('店铺'))}/{_ftext(mf.get('文件类型'))}",
+            "uploaded": [x.get("name") for x in uploaded],
+            "attachment_count": len(merged),
+            "legacy_mirror": legacy_mirror,
+        })
+
+    if uploaded_groups:
+        await ledger.update_run(run_id, "资料初检中", "upload_folder", "运营已通过上传页批量上传资料")
+        await _write_page_audit(
+            "upload_folder",
+            run_id,
+            run_id,
+            before={},
+            after={"uploaded_groups": uploaded_groups, "unmatched": unmatched, "ambiguous": ambiguous},
+            idempotency_suffix=ledger.payload_hash({"groups": uploaded_groups, "ts": ledger.now_ms()})[:16],
+        )
+    return {"ok": True, "uploaded_groups": uploaded_groups, "unmatched": unmatched, "ambiguous": ambiguous}
+
+
+async def handle_manifest_action(run_id: str, token: str, file_manifest_id: str,
+                                 action_name: str, note: str = "") -> dict:
+    if token != ledger.upload_token(run_id, "run"):
+        return {"ok": False, "error": "invalid token"}
+    manifest = await ledger.find_first(ledger.FILE_TABLE, "file_manifest_id", file_manifest_id)
+    if not manifest:
+        return {"ok": False, "error": "file_manifest_id not found"}
+    f = manifest.get("fields", {})
+    file_type = _ftext(f.get("文件类型"))
+    platform = _ftext(f.get("平台"))
+    shop = _ftext(f.get("店铺"))
+    attachments = _manifest_attachments(f)
+    note = note.strip()
+    before = dict(f)
+
+    if action_name in ("confirm_no_ad", "confirm_no_settlement") and attachments:
+        return {"ok": False, "error": "该资料项已有附件，不能直接改为无数据确认；如需修正请先补充说明。"}
+
+    if action_name == "confirm_no_ad":
+        if file_type != "广告账单":
+            return {"ok": False, "error": "只有广告账单资料项可以确认无广告消耗"}
+        await ledger.mark_manifest(file_manifest_id, {
+            "状态": "已确认无数据",
+            "无数据确认": True,
+            "上传人": "upload_page",
+            "来源message_id": "upload_page",
+            "parser结果": _page_parser_result("confirm_no_ad", note),
+        })
+        await _close_related_gaps(run_id, platform, shop, "广告证据缺失", "确认无数据")
+        await ledger.update_run(run_id, "资料初检中", "upload_page_no_ad", f"{platform}/{shop} 已确认无广告消耗")
+        message = f"已记录 {platform}/{shop} 本月无广告消耗。"
+    elif action_name == "confirm_no_settlement":
+        if file_type not in NO_SETTLEMENT_FILE_TYPES:
+            return {"ok": False, "error": "只有订单/退款/平台费用资料项可以确认该店本月无结算"}
+        touched = await _mark_shop_no_settlement(run_id, platform, shop, note)
+        await ledger.update_run(run_id, "资料初检中", "upload_page_no_settlement", f"{platform}/{shop} 已确认本月无结算")
+        message = f"已记录 {platform}/{shop} 本月无结算，已同步关闭 {touched} 个该店铺结算资料项。"
+    elif action_name == "logistics_missing":
+        if file_type != "物流账单":
+            return {"ok": False, "error": "只有物流账单资料项可以提交暂缺说明"}
+        await ledger.mark_manifest(file_manifest_id, {
+            "状态": "待补充",
+            "parser结果": _page_parser_result("logistics_missing", note),
+        })
+        await ledger.create_gap(run_id, "物流账单缺失", platform, _ftext(f.get("月份")),
+                                note or "运营提交物流账单暂缺说明")
+        await ledger.update_run(run_id, "P0待补件", "upload_page_logistics_missing", "物流账单暂缺，等待补件或财务判断")
+        message = "已记录物流账单暂缺说明，P0 gate 仍会阻断试算直到补账单或走财务例外判断。"
+    elif action_name == "note":
+        if not note:
+            return {"ok": False, "error": "补充说明不能为空"}
+        await ledger.mark_manifest(file_manifest_id, {
+            "parser结果": _page_parser_result("note", note),
+        })
+        await ledger.update_run(run_id, "资料初检中", "upload_page_note", f"{platform}/{shop}/{file_type} 已补充说明")
+        message = "已记录补充说明。"
+    else:
+        return {"ok": False, "error": f"unknown action: {action_name}"}
+
+    await _write_page_audit(
+        action_name,
+        run_id,
+        file_manifest_id,
+        before=before,
+        after={"message": message, "note": note},
+        idempotency_suffix=ledger.payload_hash({"note": note, "action": action_name})[:16],
+    )
+    return {"ok": True, "message": message}
+
+
+async def submit_upload_gate(run_id: str, token: str) -> dict:
+    if token != ledger.upload_token(run_id, "run"):
+        return {"ok": False, "error": "invalid token"}
+    run = await ledger.find_first(ledger.RUN_TABLE, "run_id", run_id)
+    period = _ftext(run.get("fields", {}).get("期间")) if run else run_id.rsplit("-", 2)[-2] + "-" + run_id.rsplit("-", 1)[-1]
+    gate = await initial_gate_and_maybe_run(run_id, period)
+    await _write_page_audit(
+        "submit_initial_gate",
+        run_id,
+        run_id,
+        before={},
+        after=gate,
+        idempotency_suffix=ledger.payload_hash({"gate": gate, "ts": ledger.now_ms()})[:16],
+    )
+    return {"ok": True, "gate": gate}
+
+
+async def _upload_files(files: list[UploadFile]) -> list[dict]:
     uploaded = []
     for f in files:
         content = await f.read()
-        res = await feishu.drive_upload_bitable_file(f.filename or "upload.bin", content, config.LEDGER_APP_TOKEN)
+        original_name = f.filename or "upload.bin"
+        res = await feishu.drive_upload_bitable_file(_file_basename(original_name), content, config.LEDGER_APP_TOKEN)
         file_token = (res.get("data") or {}).get("file_token")
         if file_token:
-            uploaded.append({"file_token": file_token, "name": f.filename})
-    if not uploaded:
-        return {"ok": False, "error": "no file uploaded"}
-    legacy_mirror = await _mirror_uploaded_files_to_legacy(manifest, uploaded)
+            uploaded.append({"file_token": file_token, "name": original_name})
+    return uploaded
+
+
+async def _store_manifest_upload(manifest: dict, uploaded: list[dict]) -> tuple[list[dict], dict]:
+    f = manifest.get("fields", {})
+    file_manifest_id = _ftext(f.get("file_manifest_id"))
+    existing = _manifest_attachments(f)
+    merged = _merge_attachments(existing, uploaded)
+    legacy_mirror = await _mirror_uploaded_files_to_legacy(manifest, merged)
     await ledger.mark_manifest(file_manifest_id, {
         "状态": "已提交",
-        "附件": uploaded,
-        "file_token_json": ledger.compact_json(uploaded),
+        "附件": merged,
+        "file_token_json": ledger.compact_json(merged),
+        "无数据确认": False,
         "parser结果": (
             "upload_page; "
             f"legacy_record_id={legacy_mirror.get('record_id', '')}; "
@@ -713,9 +1038,176 @@ async def handle_upload(run_id: str, token: str, file_manifest_id: str,
             f"legacy_mirrored={str(bool(legacy_mirror.get('ok'))).lower()}"
         ),
     })
-    await ledger.update_run(run_id, "资料初检中", "upload_page", "运营已通过上传页补充资料")
-    return {"ok": True, "file_manifest_id": file_manifest_id, "uploaded": uploaded,
-            "legacy_mirror": legacy_mirror}
+    return merged, legacy_mirror
+
+
+def _match_manifest_for_file(path: str, manifests: list[dict]) -> dict:
+    candidates: list[tuple[int, str]] = []
+    normalized = _norm(path)
+    for rec in manifests:
+        f = rec.get("fields", {})
+        manifest_id = _ftext(f.get("file_manifest_id"))
+        platform = _ftext(f.get("平台"))
+        shop = _ftext(f.get("店铺"))
+        file_type = _ftext(f.get("文件类型"))
+        if not manifest_id or not _file_type_matches(file_type, path):
+            continue
+        if file_type == "物流账单":
+            candidates.append((10, manifest_id))
+            continue
+        if _norm(shop) not in normalized:
+            continue
+        score = 20
+        if platform and _norm(platform) in normalized:
+            score += 5
+        candidates.append((score, manifest_id))
+    if not candidates:
+        return {"status": "unmatched"}
+    candidates.sort(reverse=True)
+    best_score = candidates[0][0]
+    best = [mid for score, mid in candidates if score == best_score]
+    if len(best) > 1:
+        return {"status": "ambiguous", "candidates": best}
+    return {"status": "matched", "file_manifest_id": best[0]}
+
+
+async def _mark_shop_no_settlement(run_id: str, platform: str, shop: str, note: str) -> int:
+    touched = 0
+    for rec in await ledger.manifests_for_run(run_id):
+        f = rec.get("fields", {})
+        if _ftext(f.get("平台")) != platform or _ftext(f.get("店铺")) != shop:
+            continue
+        file_type = _ftext(f.get("文件类型"))
+        if file_type not in NO_SETTLEMENT_FILE_TYPES:
+            continue
+        if _manifest_attachments(f):
+            continue
+        manifest_id = _ftext(f.get("file_manifest_id"))
+        await ledger.mark_manifest(manifest_id, {
+            "状态": "已确认无数据",
+            "无数据确认": True,
+            "上传人": "upload_page",
+            "来源message_id": "upload_page",
+            "parser结果": _page_parser_result("confirm_no_settlement", note),
+        })
+        await _close_related_gaps(run_id, platform, shop, "其他", "确认无数据")
+        touched += 1
+    return touched
+
+
+async def _close_related_gaps(run_id: str, platform: str, shop: str, gap_type: str, result: str) -> None:
+    for gap in await ledger.gaps_for_run(run_id):
+        gf = gap.get("fields", {})
+        if _ftext(gf.get("缺口类型")) != gap_type:
+            continue
+        if platform and _ftext(gf.get("平台")) != platform:
+            continue
+        evidence = _ftext(gf.get("证据"))
+        if shop and shop not in evidence:
+            continue
+        await ledger.mark_gap(_ftext(gf.get("gap_id")), {
+            "处理结果": result,
+            "是否可定稿": True,
+        })
+
+
+def _page_parser_result(action: str, note: str = "") -> str:
+    base = f"upload_page_action={action}"
+    return f"{base}; note={note[:800]}" if note else base
+
+
+async def _write_page_audit(action: str, run_id: str, target_id: str,
+                            before: Any, after: Any, idempotency_suffix: str) -> None:
+    await ledger.write_audit(
+        f"upload_page:{run_id}:{target_id}:{action}:{idempotency_suffix}",
+        f"upload_page_{action}",
+        "upload_page",
+        run_id,
+        "file_manifest" if target_id != run_id else "run",
+        target_id,
+        before,
+        after,
+        {"source": "upload_page"},
+        "ok",
+        "",
+    )
+
+
+def _is_manifest_done(fields: dict) -> bool:
+    status = _ftext(fields.get("状态"))
+    return status in ("已提交", "已解析", "已确认无数据", "已关闭")
+
+
+def _status_badge(fields: dict) -> tuple[str, str]:
+    status = _ftext(fields.get("状态")) or "待提交"
+    if _is_manifest_done(fields):
+        return status, "done"
+    if status in ("待补充", "P0待补件"):
+        return status, "blocked"
+    return status, "pending"
+
+
+def _manifest_row_html(rec: dict, run_id: str, token: str) -> str:
+    f = rec.get("fields", {})
+    mid = _ftext(f.get("file_manifest_id"))
+    platform = _ftext(f.get("平台"))
+    shop = _ftext(f.get("店铺"))
+    file_type = _ftext(f.get("文件类型"))
+    status_text, status_class = _status_badge(f)
+    atts = _manifest_attachments(f)
+    files = "<br>".join(html.escape(str(a.get("name") or a.get("file_token") or "附件")) for a in atts) or "<span class=\"hint\">未上传</span>"
+    row_class = "done" if status_class == "done" else ("blocked" if status_class == "blocked" else "pending")
+    actions = [_upload_form(run_id, token, mid)]
+    if file_type == "广告账单":
+        actions.append(_action_form(run_id, token, mid, "confirm_no_ad", "确认该店本月无广告消耗", disabled=bool(atts)))
+    elif file_type in NO_SETTLEMENT_FILE_TYPES:
+        actions.append(_action_form(run_id, token, mid, "confirm_no_settlement", "确认该店本月无结算", disabled=bool(atts)))
+    elif file_type == "物流账单":
+        actions.append(_action_form(run_id, token, mid, "logistics_missing", "暂缺账单，提交缺口说明", note=True, warn=True))
+    actions.append(_action_form(run_id, token, mid, "note", "补充说明", note=True))
+    return f"""
+<tr class="{row_class}">
+  <td data-label="平台">{html.escape(platform)}</td>
+  <td data-label="店铺">{html.escape(shop)}</td>
+  <td data-label="资料项">{html.escape(file_type)}</td>
+  <td data-label="状态"><span class="status {status_class}">{html.escape(status_text)}</span></td>
+  <td data-label="已上传/证据"><div class="files">{files}</div></td>
+  <td data-label="操作"><div class="actions">{''.join(actions)}</div></td>
+</tr>
+"""
+
+
+def _hidden_fields(run_id: str, token: str, file_manifest_id: str) -> str:
+    return (
+        f'<input type="hidden" name="run_id" value="{html.escape(run_id)}">'
+        f'<input type="hidden" name="token" value="{html.escape(token)}">'
+        f'<input type="hidden" name="file_manifest_id" value="{html.escape(file_manifest_id)}">'
+    )
+
+
+def _upload_form(run_id: str, token: str, file_manifest_id: str) -> str:
+    return (
+        '<form class="inline-form upload-form" method="post" enctype="multipart/form-data" action="/upload">'
+        f'{_hidden_fields(run_id, token, file_manifest_id)}'
+        '<input type="file" name="files" multiple required>'
+        '<button type="submit">上传文件</button>'
+        '</form>'
+    )
+
+
+def _action_form(run_id: str, token: str, file_manifest_id: str, action_name: str,
+                 label: str, *, note: bool = False, warn: bool = False, disabled: bool = False) -> str:
+    note_input = '<input type="text" name="note" placeholder="说明，可选">' if note else '<input type="hidden" name="note" value="">'
+    disabled_attr = " disabled" if disabled else ""
+    klass = "warn" if warn else ""
+    return (
+        '<form class="inline-form" method="post" action="/upload/action">'
+        f'{_hidden_fields(run_id, token, file_manifest_id)}'
+        f'<input type="hidden" name="action_name" value="{html.escape(action_name)}">'
+        f'{note_input}'
+        f'<button class="{klass}" type="submit"{disabled_attr}>{html.escape(label)}</button>'
+        '</form>'
+    )
 
 
 async def _legacy_pointer_for_manifest(manifest: dict) -> dict:

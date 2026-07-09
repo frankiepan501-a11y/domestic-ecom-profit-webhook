@@ -82,9 +82,9 @@ def operation_submit_card(run_id: str, period: str, checklist: list[str]) -> dic
         _md(
             "**提交前自查**\n"
             "- 订单明细必须保留 `商家编码`，能映射 ERP SKU。\n"
-            "- 广告/推广没有消耗也必须点“本月无广告消耗”。\n"
+            "- 广告/推广没有消耗，也必须在上传页按店铺点“确认该店本月无广告消耗”。\n"
             "- 物流账单需覆盖前月、本月、次月可归属尾单。\n"
-            "- 无结算不能默认跳过，必须点“本月无结算”。"
+            "- 无结算不能默认跳过，必须在上传页按店铺点“确认该店本月无结算”。"
         ),
         {"tag": "hr"},
         {
@@ -92,15 +92,11 @@ def operation_submit_card(run_id: str, period: str, checklist: list[str]) -> dic
             "actions": [
                 _button("已上传资料", _payload("domestic_profit_ops_files_uploaded", run_id, "ops_submit", cid,
                                            period=period, nonce=nonce), button_type="primary"),
-                _button("本月无广告消耗", _payload("domestic_profit_ops_no_ad", run_id, "ops_submit", cid,
-                                            period=period, decision="no_ad", nonce=nonce)),
-                _button("本月无结算", _payload("domestic_profit_ops_no_settlement", run_id, "ops_submit", cid,
-                                        period=period, decision="no_settlement", nonce=nonce)),
                 _button("补充说明", _payload("domestic_profit_ops_note", run_id, "ops_submit", cid,
                                       period=period, nonce=nonce)),
             ],
         },
-        _note(f"run_id={run_id}；按钮会自动写 Base ledger，运营无需进入任务台改状态。"),
+        _note(f"run_id={run_id}；无广告/无结算改为上传页逐店铺确认，避免全局误点。"),
     ]
     return _base_card(f"🟡 [FIN·P2] 国内电商毛利报表资料提交 · {period}", "blue", elements)
 

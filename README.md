@@ -11,8 +11,15 @@
 | POST | `/profit/run-sync` | 同步触发 - 等结果 (本地测试用) |
 | GET | `/profit/poll` | 扫任务台找"🔥触发计算"行 |
 | POST | `/profit/poll-and-run` | n8n cron 用 - 扫 + 触发 |
+| GET | `/upload` | 国内电商卡片化资料工作台 |
+| POST | `/upload` | 单项资料追加上传 |
+| POST | `/upload/batch` | 文件夹批量上传并自动归类 |
+| POST | `/upload/action` | 逐行确认无广告/无结算/补充说明 |
+| POST | `/upload/submit` | 提交 P0 初检，缺口卡或试算 |
 
 所有 POST 端点需要 `Authorization: Bearer <WEBHOOK_BEARER_TOKEN>`.
+
+`/upload*` 端点使用卡片链接里的 `run_id + token` 鉴权，不走 Bearer；运营只通过飞书卡片进入，不需要访问 Base 或任务台。
 
 ## 环境变量
 

@@ -12,6 +12,7 @@
 - 新增 `app/cards.py`：运营资料提交卡、P0 缺口卡、财务确认卡、已处理结果卡。
 - 新增 `app/card_workflow.py`：月度 run 创建、资料清单生成、P0 gate、试算触发、财务确认、callback 幂等与 PATCH。
 - 上传页写新附件台后，会按 `run_id/platform/shop/file_type` 自动镜像附件到旧任务台对应附件字段，保证现有 `task_runner` 无需重写即可读到卡片上传资料。
+- P0 上传页已升级为逐行资料工作台：按 `平台/店铺/文件类型` 展示状态和已有附件，支持单项追加上传、文件夹批量上传自动归类、店铺级“无广告消耗”确认、店铺级“无结算”确认、物流暂缺说明和提交初检。单项追加上传会保留旧附件并去重，不要求运营从 0 重传。
 - 更新 `app/main.py`：新增 `/cards/monthly-intake`、`/cards/test`、`/cards/test-samples`、`/cards/callback`、`/upload`；`/tasks/remind-monthly` 在 `CARD_WORKFLOW_ENABLED=true` 时发卡。
 - 更新 `app/feishu.py`：支持 App3 发卡/PATCH、Base 创建记录、上传附件、open_id -> union_id。
 - 更新 `app/writer.py`：输出 workbook 增加 `产品毛利_月度`、`产品毛利_季度` 两个 gate sheet。
@@ -57,6 +58,17 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 `card.action.trigger -> Is Domestic Profit Action -> Domestic Profit Callback -> POST /cards/callback`
 
 服务端以 `value.action` 路由，使用 `idempotency_key` 查审计日志，重复点击只 PATCH 原卡为已处理态，不重复写 Base、不重复触发试算。
+
+## 上传工作台 P0 行为
+
+运营收到资料提交卡后进入 `/upload?run_id=...&token=...`。飞书卡片不再放全局“本月无广告消耗/本月无结算”按钮，避免把店铺级判断误写成整月判断。
+
+- 单项上传：每一行可上传多个文件。新上传会和已有 `附件/file_token_json` 合并并按文件名去重，然后继续镜像到旧任务台附件字段。
+- 文件夹上传：浏览器选择本地文件夹，前端把 `webkitRelativePath` 作为文件名提交。服务端按文件路径中的平台、店铺、文件类型关键词匹配 manifest。未识别或匹配不唯一的文件只回显给运营，不静默写入。
+- 无广告确认：只出现在 `广告账单` 行，点击后仅把该店铺该月广告账单 manifest 标为 `已确认无数据`，并关闭对应 `广告证据缺失` P0 gap。
+- 无结算确认：只出现在 `订单明细/退款明细/平台费用` 行，点击后按同一 `平台+店铺` 同步把这三类未上传资料项标为 `已确认无数据`。不会把整月 run 改成 `本期无结算已确认`。
+- 物流暂缺说明：只记录 `物流账单缺失` gap 和 manifest `待补充`，不会放行 P0 gate。
+- 提交初检：上传页顶部 `提交初检` 调 `initial_gate_and_maybe_run`。有 P0 缺口则按 Frankie-only 测试链路发缺口卡；无缺口则进入试算。
 
 ## 验证记录
 
