@@ -40,7 +40,14 @@ Ledger Base：`IKyGb1jydaZW7msBzAicViiWngg`
 生产开关：
 
 - `CARD_WORKFLOW_ENABLED=true`
+- `CARD_WORKFLOW_FRANKIE_ONLY=true` 测试期只发 Frankie；Frankie 确认卡片流程后才改为 `false` 派给运营/财务。
 - `FEISHU_EVENT_APP_ID` / `FEISHU_EVENT_APP_SECRET` 用于 App3 发卡和 PATCH。
+
+## 测试纪律
+
+卡片工作流上线或改派送对象时，先进入 Frankie-only 测试模式。禁止在 Frankie 完整走通“收到卡片 -> 上传/点击 -> callback 写 ledger -> 原卡 PATCH”的链路前，把 `/tasks/remind-monthly` 或等价生产入口直接发给运营负责人。
+
+如果需要验证运营卡样式，使用 `/cards/test?send=true` 或 `/cards/test-samples?send=true` 发给 Frankie；不要用 `/tasks/remind-monthly?force=true` 直接打运营，除非 `CARD_WORKFLOW_FRANKIE_ONLY=true` 已生效。
 
 ## Callback 路由
 

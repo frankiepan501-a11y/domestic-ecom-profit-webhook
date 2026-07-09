@@ -21,6 +21,7 @@ LEDGER_GAP_TABLE_ID = os.getenv("LEDGER_GAP_TABLE_ID", "tblqTPPHLWRhHkuD")
 LEDGER_OUTPUT_TABLE_ID = os.getenv("LEDGER_OUTPUT_TABLE_ID", "tblnMy4Jb8jK7JQz")
 LEDGER_AUDIT_TABLE_ID = os.getenv("LEDGER_AUDIT_TABLE_ID", "tblVggmv7oeMBMaj")
 CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "true"
+CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lower() == "true"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
 # 任务台字段 ID

@@ -87,7 +87,10 @@ async def remind_monthly(force: bool = False, authorization: str | None = Header
     _check_auth(authorization)
     if config.CARD_WORKFLOW_ENABLED:
         from . import card_workflow
-        return await card_workflow.send_monthly_intake(force=force)
+        return await card_workflow.send_monthly_intake(
+            force=force,
+            frankie_only=config.CARD_WORKFLOW_FRANKIE_ONLY,
+        )
     from . import reminder
     return await reminder.monthly_upload_reminder(force=force)
 
