@@ -6,6 +6,7 @@ v0.2.0 关键变化:
 - v0.2 P1 仍只跑 POWKONG (parser 限制), P2 加纷岚, P3/P4/P5 加抖音/小红书/京东
 """
 import asyncio
+import hashlib
 import json
 import os
 import traceback
@@ -27,28 +28,45 @@ V02_SHOP_WHITELIST = {
     ("京东", "宝空店"),
 }
 
-# 成本缺口告警: 月报生成时检测"有销量但领星 cg_price=0"的 SKU → 告警采购补成本
-# (2026-06-08 Frankie 要求: 避免报表跑出来才发现单行成本=0/毛利虚高)
+# 成本缺口告警: 仅在财务签核口径实际产生采购成本 P0 时告警采购。
+# REPORT_SUPPRESS_NOTIFY=1 和幂等审计都会阻断重复测试消息。
 _PROC_DEPT_ROOTS = ["od-273719791eed9b0558c20e0960da991a"]  # 采购部
 _PROC_JOB_TITLES = ["采购专员"]
 
 
 async def _alert_cost_gap(month: str, gap: list, sku_meta: dict, sku_to_shops: dict):
-    """gap=有销量但领星成本0的SKU。告警采购专员+Frankie 在领星补 cg_price 后重跑。非阻塞。"""
+    """gap=财务签核口径下采购成本为0的SKU/对象。告警采购专员+Frankie。非阻塞。"""
     if not gap:
         return
+    if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
+        print("  ⏭ 成本缺口告警已抑制 (REPORT_SUPPRESS_NOTIFY)")
+        return
+
+    gap = sorted({str(x) for x in gap if str(x).strip()})
+    idem = "domestic_profit_cost_gap_alert:" + hashlib.sha1(
+        f"{month}:{'|'.join(gap)}".encode("utf-8")
+    ).hexdigest()[:32]
+    try:
+        from . import ledger
+        if await ledger.audit_exists(idem):
+            print("  ⏭ 成本缺口告警已发送过，跳过重复通知")
+            return
+    except Exception as e:
+        print(f"  ⚠️ 成本缺口告警幂等检查失败，继续尝试发送: {e}")
+
     lines = [
         f"🟠 [FIN·P1] 国内电商毛利报表 · {month} 采购成本缺口告警",
-        f"以下 {len(gap)} 个 SKU 在 {month} 有销量但领星 cg_price=0 → 报表这些行毛利会虚高，请在领星补采购成本后重跑：",
+        f"以下 {len(gap)} 个 SKU/对象在财务签核口径下采购成本为 0，会影响毛利，请维护产品采购成本台或领星 cg_price 后重跑：",
     ]
     for sku in gap[:25]:
         meta = sku_meta.get(sku) or {}
         name = meta.get("name", "")
         shops = sku_to_shops.get(sku, set())
         shop_str = "/".join(f"{p}{s}" for p, s in list(shops)[:3])
-        tag = "(领星无此SKU)" if not meta else "(领星有但cg=0)"
+        source = meta.get("source", "")
+        tag = f"({source})" if source else "(采购成本=0)"
         lines.append(f"• {sku} {name} {tag} [{shop_str}]")
-    lines.append("补完领星 cg_price → 把月度汇总行改「🔥触发计算」重跑即修。")
+    lines.append("补完后通过卡片提交初检或重跑月度汇总；测试重跑不会重复弹此消息。")
     msg = "\n".join(lines)
     recips: dict = {}
     try:
@@ -56,11 +74,29 @@ async def _alert_cost_gap(month: str, gap: list, sku_meta: dict, sku_to_shops: d
     except Exception:
         pass
     recips.setdefault(config.FRANKIE_OPEN_ID, "潘志聪")
+    sent = 0
     for oid in recips:
         try:
             await feishu.send_text(oid, msg)
+            sent += 1
         except Exception:
             pass
+    try:
+        from . import ledger
+        await ledger.write_audit(
+            idem,
+            "cost_gap_alert",
+            "system",
+            ledger.run_id_for_month(month),
+            "cost_gap",
+            idem,
+            {},
+            {"gap": gap, "sent": sent},
+            {"month": month, "gap": gap},
+            "sent" if sent else "no_recipient",
+        )
+    except Exception as e:
+        print(f"  ⚠️ 成本缺口告警审计写入失败: {e}")
 
 
 async def update_status(record_id: str, fields: dict):
@@ -378,7 +414,7 @@ async def run_profit(record_id: str) -> dict:
             cost_map = await _load_finance_cost_map(raw["sku_set"], lx_data)
             sku_costs = {sku: info.get("unit_cost", 0) for sku, info in cost_map.items()}
             sku_meta = {
-                sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0)}
+                sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0), "source": info.get("source", "")}
                 for sku, info in cost_map.items()
             }
             print(f"  成本台可用 SKU {len(cost_map)}")
@@ -389,7 +425,10 @@ async def run_profit(record_id: str) -> dict:
                 for sku, info in lx_data.items()
             }
             sku_costs = {sku: info.get("unit_cost", 0) for sku, info in cost_map.items()}
-            sku_meta = {sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0)} for sku, info in cost_map.items()}
+            sku_meta = {
+                sku: {"name": info.get("name", ""), "cost": info.get("unit_cost", 0), "source": info.get("source", "")}
+                for sku, info in cost_map.items()
+            }
 
         sku_names = {sku: info.get("name", "") for sku, info in sku_meta.items()}
 
@@ -400,16 +439,7 @@ async def run_profit(record_id: str) -> dict:
             if sku:
                 sku_to_shops.setdefault(sku, set()).add((o["platform"], o["shop"]))
 
-        # 2.4 成本缺口自查 + 告警采购 (有销量但领星 cg_price=0 → 报表毛利虚高)
-        cost_gap = [s for s in raw["sku_set"] if s and sku_costs.get(s, 0) == 0]
-        if cost_gap:
-            print(f"  ⚠️ 成本缺口 {len(cost_gap)} SKU(领星cg=0): {cost_gap[:15]} → 告警采购")
-            try:
-                await _alert_cost_gap(year_month, cost_gap, sku_meta, sku_to_shops)
-            except Exception as e:
-                print(f"  成本缺口告警失败: {e}")
-
-        # 2.5 顺丰 API 反查运费 (v0.5 加, 2026-05-12)
+        # 2.4 顺丰 API 反查运费 (v0.5 加, 2026-05-12)
         # 策略: 从订单提取所有 SF 运单号 → 并发查 API → 与 xlsx 解析的 logistics 双路径
         #       API 数据 source='API', xlsx 数据 source='xlsx', engine 不区分按 tracking join
         #       同一 tracking 重复时 xlsx 在前 (parser 已加入), API 后到 → 后插入的覆盖
@@ -443,6 +473,26 @@ async def run_profit(record_id: str) -> dict:
                                 raw["ads"], raw["logistics"], sku_costs, sku_names,
                                 year_month=year_month)
         settlement = settlement_engine.compute(raw, cost_map, year_month)
+        settlement_cost_gap = sorted({
+            str(g[5]) for g in settlement.get("gap_rows", [])
+            if len(g) >= 7 and g[0] == "P0" and g[4] == "采购成本" and str(g[5]).strip()
+        })
+        if settlement_cost_gap:
+            print(f"  ⚠️ 财务签核口径采购成本 P0 {len(settlement_cost_gap)} 个 → 告警采购")
+            try:
+                await _alert_cost_gap(year_month, settlement_cost_gap, sku_meta, sku_to_shops)
+            except Exception as e:
+                print(f"  成本缺口告警失败: {e}")
+        else:
+            raw_zero_cost = [
+                s for s in raw["sku_set"]
+                if s and sku_costs.get(s, 0) == 0 and sku_to_shops.get(s)
+            ]
+            if raw_zero_cost:
+                print(
+                    f"  ⏭ 原始订单附件有 {len(raw_zero_cost)} 个成本为0的SKU，但结算签核口径无采购成本P0，"
+                    "不发送即时告警"
+                )
 
         # 4. 创建新表
         token, sm = await writer.create_report_spreadsheet(year_month)

@@ -66,6 +66,24 @@ def _base_card(title: str, template: str, elements: list[dict]) -> dict:
     }
 
 
+def _short(text: str, limit: int = 360) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in ("true", "1", "yes", "y", "是", "已通过")
+
+
+def _gap_closed_status(status: str) -> bool:
+    return status in ("已关闭", "已补文件", "确认无数据", "本期暂缓，后续补充", "接受历史临时估算")
+
+
 def operation_submit_card(run_id: str, period: str, checklist: list[str]) -> dict:
     cid = ledger.card_id("ops_submit", run_id)
     nonce = str(int(time.time() * 1000))
@@ -149,22 +167,54 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
     output_id = ledger.extract_text(of.get("output_id"))
     period = ledger.extract_text(rf.get("期间"))
     workbook = ledger.extract_text(of.get("workbook链接"))
-    tax_summary = ledger.extract_text(of.get("涉税核对摘要")) or "P0 版本：涉税核对摘要待财务复核"
-    gap_lines = []
-    for g in gaps[:8]:
+    tax_summary = _short(ledger.extract_text(of.get("涉税核对摘要")) or "税务A_B核对 sheet 已随输出包生成，请财务复核差异解释。", 520)
+    has_monthly = _truthy(of.get("产品毛利月度"))
+    has_quarterly = _truthy(of.get("产品毛利季度"))
+    open_p0: list[str] = []
+    exceptions: list[str] = []
+    for g in gaps:
         gf = g.get("fields", {})
-        gap_lines.append(f"- {ledger.extract_text(gf.get('gap_id'))} / {ledger.extract_text(gf.get('缺口类型'))} / {ledger.extract_text(gf.get('处理结果'))}")
-    if not gap_lines:
-        gap_lines.append("- 无未关闭 P0 缺口")
+        p_level = ledger.extract_text(gf.get("P级"))
+        status = ledger.extract_text(gf.get("处理结果")) or "待处理"
+        can_finalize = bool(gf.get("是否可定稿"))
+        desc = (
+            f"- {ledger.extract_text(gf.get('平台')) or '全平台'} / "
+            f"{ledger.extract_text(gf.get('缺口类型')) or '-'} / {status}"
+        )
+        if p_level == "P0" and not can_finalize and not _gap_closed_status(status):
+            open_p0.append(desc)
+        elif (
+            p_level == "P1"
+            or status in ("本期暂缓，后续补充", "接受历史临时估算", "财务接受临时估算")
+            or (can_finalize and status not in ("已补文件", "确认无数据"))
+        ):
+            exceptions.append(desc)
+    gate_ok = (not open_p0) and has_monthly and has_quarterly
+    open_text = "\n".join(open_p0[:6]) if open_p0 else "- 无未关闭 P0 缺口"
+    exception_text = "\n".join(exceptions[:6]) if exceptions else "- 无 P1/临时估算例外"
+    conclusion = "可进入财务定稿确认" if gate_ok else "仍需处理 gate 后再确认"
+    scope = "天猫、抖音、小红书、京东；淘宝/拼多多按本期口径暂缓，后续补做。"
     cid = ledger.card_id("finance_confirm", run_id, output_id)
     nonce = str(int(time.time() * 1000))
+    workbook_text = f"[打开自动化报表]({workbook})" if workbook else "待生成"
     elements = [
         _md(
+            f"**结论**：{conclusion}\n"
             f"**期间**：{period}\n"
-            f"**输出包**：{workbook or '待生成'}\n"
-            f"**产品毛利 sheet gate**：月度={bool(of.get('产品毛利月度'))}，季度={bool(of.get('产品毛利季度'))}\n\n"
+            f"**纳入范围**：{scope}\n"
+            f"**输出包**：{workbook_text}"
+        ),
+        _md(
+            "**财务确认 Gate**\n"
+            f"- P0缺口：{len(open_p0)}\n"
+            f"- 产品毛利_月度：{'✅ 已生成' if has_monthly else '❌ 缺失'}\n"
+            f"- 产品毛利_季度：{'✅ 已生成' if has_quarterly else '❌ 缺失'}\n"
+            f"- 税务A_B核对：已随输出包生成"
+        ),
+        _md(
             f"**涉税核对摘要**\n{tax_summary}\n\n"
-            f"**P0/P1 缺口与例外**\n" + "\n".join(gap_lines)
+            f"**未关闭 P0**\n{open_text}\n\n"
+            f"**P1/例外**\n{exception_text}"
         ),
         {"tag": "hr"},
         {
@@ -186,7 +236,8 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
         },
         _note("确认会写输出报表台、报表运行台和审计日志，并 PATCH 原卡。"),
     ]
-    return _base_card(f"🟡 [FIN·P2] 国内电商毛利报表财务确认 · {period}", "orange", elements)
+    template = "green" if gate_ok else "orange"
+    return _base_card(f"🟡 [FIN·P2] 国内电商毛利报表定稿确认 · {period}", template, elements)
 
 
 def processed_card(title: str, message: str, *, ok: bool = True, details: dict | None = None) -> dict:

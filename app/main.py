@@ -134,6 +134,23 @@ async def cards_test_samples(year_month: str | None = None, send: bool = False,
     return await card_workflow.send_sample_cards(year_month, send=send)
 
 
+@app.post("/cards/finance-confirm")
+async def cards_finance_confirm(year_month: str | None = None,
+                                workbook_url: str = "",
+                                dry_run: bool = False,
+                                frankie_only: bool = True,
+                                authorization: str | None = Header(None)):
+    """Send the real finance confirmation card for a month. Defaults to Frankie-only smoke."""
+    _check_auth(authorization)
+    from . import card_workflow
+    return await card_workflow.send_finance_confirm_for_month(
+        year_month,
+        workbook_url=workbook_url,
+        dry_run=dry_run,
+        frankie_only=frankie_only,
+    )
+
+
 @app.post("/cards/callback")
 async def cards_callback(req: dict, authorization: str | None = Header(None)):
     """Event Hub 转发 card.action.trigger 到这里。业务写入和 PATCH 在服务端幂等处理。"""

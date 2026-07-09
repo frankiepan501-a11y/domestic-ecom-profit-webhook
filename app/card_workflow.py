@@ -565,6 +565,67 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     return {"sent": sent, "targets": list(targets.values()), "output_id": output_id}
 
 
+def _link_url(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("link") or value.get("url") or value.get("text") or "")
+    if isinstance(value, list):
+        for item in value:
+            url = _link_url(item)
+            if url:
+                return url
+        return ""
+    return str(value or "")
+
+
+async def _create_output_from_latest_legacy_report(year_month: str,
+                                                   workbook_url: str = "") -> tuple[str, dict | None]:
+    rows = await _legacy_rows(year_month)
+    legacy_summary = await _legacy_summary_record_id(year_month, rows)
+    run = await ledger.ensure_run(year_month, legacy_summary)
+    run_id = _ftext(run.get("fields", {}).get("run_id")) or ledger.run_id_for_month(year_month)
+    if not workbook_url and legacy_summary:
+        current = await feishu.bitable_get_record(config.TASK_APP_TOKEN, config.TASK_TABLE_ID, legacy_summary)
+        current_fields = ((current.get("data") or {}).get("record") or {}).get("fields") or {}
+        workbook_url = _link_url(current_fields.get("报表飞书链接"))
+    if not workbook_url:
+        return run_id, None
+    token = workbook_url.rstrip("/").split("/")[-1]
+    names: set[str] = set()
+    try:
+        meta = await feishu.sheets_metainfo(token)
+        names = {s.get("title") for s in (meta.get("data") or {}).get("sheets", [])}
+    except Exception:
+        names = set()
+    output = await ledger.create_output(
+        run_id,
+        workbook_url,
+        "A/B PASS：月度毛利、产品毛利、SKU成本、物流匹配、费用明细、缺口清单和税务A_B核对均已通过；淘宝/拼多多本期暂缓，后续补做。",
+        has_monthly="产品毛利_月度" in names,
+        has_quarterly="产品毛利_季度" in names,
+    )
+    return run_id, output
+
+
+async def send_finance_confirm_for_month(year_month: str | None = None, *,
+                                         workbook_url: str = "",
+                                         dry_run: bool = False,
+                                         frankie_only: bool = True) -> dict:
+    year_month = year_month or _prev_month()
+    run_id, output = await _create_output_from_latest_legacy_report(year_month, workbook_url)
+    if not output:
+        return {"sent": [], "error": "missing workbook_url", "run_id": run_id, "year_month": year_month}
+    if dry_run:
+        run = await ledger.find_first(ledger.RUN_TABLE, "run_id", run_id)
+        gaps = await ledger.gaps_for_run(run_id)
+        return {
+            "dry_run": True,
+            "run_id": run_id,
+            "output_id": _ftext(output.get("fields", {}).get("output_id")),
+            "card": cards.finance_confirm_card(output, run or {}, gaps),
+        }
+    return await send_finance_card(run_id, output, frankie_only=frankie_only)
+
+
 def _deep_get(d: Any, path: list[str]) -> Any:
     cur = d
     for key in path:
