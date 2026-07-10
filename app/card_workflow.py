@@ -564,7 +564,8 @@ async def send_finance_card(run_id: str, output: dict | None = None,
         await _grant_output_workbook_access(output)
     gaps = await ledger.gaps_for_run(run_id)
     platform_output = _with_output_platform(output, platform)
-    card = cards.finance_confirm_card(platform_output, run, gaps)
+    report_summary = await _platform_report_summary(platform_output, platform)
+    card = cards.finance_confirm_card(platform_output, run, gaps, report_summary=report_summary)
     targets = await _finance_union_targets(frankie_only=frankie_only)
     sent = await _send_card_to_union_targets(card, targets)
     output_id = _ftext(platform_output.get("fields", {}).get("output_id"))
@@ -643,6 +644,105 @@ def _link_url(value: Any) -> str:
     return str(value or "")
 
 
+def _to_float(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    text = text.replace(",", "").replace("¥", "").replace("￥", "").replace("%", "")
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def _ratio_value(value: Any) -> float:
+    if isinstance(value, str) and "%" in value:
+        return _to_float(value) / 100
+    return _to_float(value)
+
+
+async def _sheet_id_by_title(spreadsheet_token: str, title: str) -> str:
+    meta = await feishu.sheets_metainfo(spreadsheet_token)
+    for sheet in (meta.get("data") or {}).get("sheets", []):
+        if sheet.get("title") == title:
+            return str(sheet.get("sheetId") or "")
+    return ""
+
+
+async def _platform_report_summary(output: dict, platform: str) -> dict:
+    fields = output.get("fields", {})
+    workbook_url = _link_url(fields.get("workbook链接"))
+    token = _sheet_token_from_url(workbook_url)
+    if not token:
+        return {"stores": [], "issues": [], "blocking_issues": ["报表链接缺失，无法读取店铺毛利数据。"]}
+    try:
+        sheet_id = await _sheet_id_by_title(token, "月度毛利试算")
+        if not sheet_id:
+            return {"stores": [], "issues": [], "blocking_issues": ["报表缺少“月度毛利试算”sheet。"]}
+        res = await feishu.sheets_values_get(token, f"{sheet_id}!A1:T500")
+    except Exception as e:
+        return {"stores": [], "issues": [], "blocking_issues": [f"读取月度毛利试算失败：{e}"]}
+    if res.get("code") not in (0, None):
+        return {
+            "stores": [],
+            "issues": [],
+            "blocking_issues": [f"读取月度毛利试算失败：{res.get('code')} {res.get('msg')}"],
+        }
+    value_range = (res.get("data") or {}).get("valueRange") or {}
+    values = value_range.get("values") or []
+    if len(values) < 2:
+        return {"stores": [], "issues": [], "blocking_issues": ["月度毛利试算没有店铺数据。"]}
+    header = [str(x or "").strip() for x in values[0]]
+    stores: list[dict] = []
+    issues: list[str] = []
+    blocking_issues: list[str] = []
+    for raw in values[1:]:
+        row = {header[i]: raw[i] if i < len(raw) else "" for i in range(len(header))}
+        if _ftext(row.get("平台")) != platform:
+            continue
+        shop = _ftext(row.get("店铺")) or "-"
+        net_sales = _to_float(row.get("净销售额(RMB)"))
+        gross_profit = _to_float(row.get("试算毛利(RMB)"))
+        margin = _ratio_value(row.get("试算毛利率"))
+        cost = _to_float(row.get("采购成本(RMB)"))
+        logistics = _to_float(row.get("尾程费用(RMB)"))
+        orders = _to_float(row.get("销售订单数"))
+        p0_count = _to_float(row.get("P0缺口数"))
+        status = _ftext(row.get("状态"))
+        stores.append({
+            "shop": shop,
+            "orders": orders,
+            "qty": _to_float(row.get("销量")),
+            "net_sales": net_sales,
+            "ad_fee": _to_float(row.get("广告费(RMB)")),
+            "procurement_cost": cost,
+            "logistics_cost": logistics,
+            "gross_profit": gross_profit,
+            "gross_margin": row.get("试算毛利率"),
+            "status": status or "已生成",
+        })
+        if p0_count > 0:
+            blocking_issues.append(f"{shop} 仍有资料或成本缺失 {int(p0_count)} 项。")
+        if net_sales > 0 and cost <= 0:
+            blocking_issues.append(f"{shop} 有销售额但采购成本为 0，请补成本或确认成本来源。")
+        if orders > 0 and logistics <= 0:
+            blocking_issues.append(f"{shop} 有订单但物流费用为 0，请确认物流账单或无物流原因。")
+        if gross_profit < 0:
+            issues.append(f"{shop} 毛利为负（毛利额 {gross_profit:,.2f}，毛利率 {margin * 100:.2f}%），请确认业务原因；这不是自动判定的资料缺口。")
+        if status and any(key in status for key in ("缺口", "失败", "异常", "待补")):
+            blocking_issues.append(f"{shop} 报表状态为“{status}”，请先处理后再定稿。")
+    if not stores:
+        blocking_issues.append(f"月度毛利试算没有读取到 {platform} 店铺行。")
+    return {
+        "stores": stores,
+        "issues": issues,
+        "blocking_issues": blocking_issues,
+        "sheet": "月度毛利试算",
+    }
+
+
 async def _finance_platform_done_summary(run_id: str, workbook_url: str) -> tuple[int, int]:
     done = 0
     total = len(FINANCE_CONFIRM_PLATFORMS)
@@ -698,7 +798,13 @@ async def send_finance_confirm_for_month(year_month: str | None = None, *,
         cards_by_platform = {}
         for platform in FINANCE_CONFIRM_PLATFORMS:
             platform_output = await _ensure_platform_output(output, platform)
-            cards_by_platform[platform] = cards.finance_confirm_card(platform_output, run or {}, gaps)
+            report_summary = await _platform_report_summary(platform_output, platform)
+            cards_by_platform[platform] = cards.finance_confirm_card(
+                platform_output,
+                run or {},
+                gaps,
+                report_summary=report_summary,
+            )
         return {
             "dry_run": True,
             "run_id": run_id,
@@ -803,8 +909,8 @@ async def handle_callback(body: dict) -> dict:
     duplicate = await ledger.audit_exists(idempotency_key)
     if duplicate:
         card = cards.processed_card("✅ 国内电商报表卡片已处理", "系统已处理过这次点击，重复点击没有副作用。", details={
-            "action": action,
-            "run_id": run_id,
+            "报表批次": run_id,
+            "处理编号": idempotency_key[:10],
         })
         patch = await _patch_or_reply(ctx["message_id"], ctx["chat_id"], ctx["operator_open_id"], card)
         return {"duplicate": True, "patch": patch}
@@ -942,7 +1048,7 @@ async def handle_callback(body: dict) -> dict:
         "✅ 国内电商报表卡片已处理" if ok else "⚠️ 国内电商报表卡片未处理",
         result_message,
         ok=ok,
-        details={"action": action, "run_id": run_id, "target": target_id},
+        details={"报表批次": run_id, "处理对象": target_id, "处理编号": idempotency_key[:10]},
     )
     patch = await _patch_or_reply(ctx["message_id"], ctx["chat_id"], ctx["operator_open_id"], processed)
     return {"ok": ok, "action": action, "run_id": run_id, "patch": patch}

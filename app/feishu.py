@@ -1,6 +1,7 @@
 """飞书 API 封装 — token 缓存 + bitable + sheets + drive medias + im."""
 import time
 import json
+from urllib.parse import quote
 import httpx
 from typing import Any
 from . import config
@@ -157,6 +158,11 @@ async def sheets_values_batch_update(spreadsheet_token: str, value_ranges: list)
     return await _req("POST",
                       f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values_batch_update",
                       json={"valueRanges": value_ranges})
+
+
+async def sheets_values_get(spreadsheet_token: str, range_name: str) -> dict:
+    encoded_range = quote(range_name, safe="")
+    return await _req("GET", f"/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{encoded_range}")
 
 
 def _col_letter(n: int) -> str:
