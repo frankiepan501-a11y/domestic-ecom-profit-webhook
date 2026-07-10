@@ -51,6 +51,11 @@ def card_id(card_type: str, run_id: str, target_id: str = "") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
+def output_id_for(run_id: str, workbook_url: str, platform: str = "") -> str:
+    raw = f"{run_id}:{workbook_url}:{platform}"
+    return "out_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:14]
+
+
 def extract_text(value: Any) -> str:
     if value is None:
         return ""
@@ -254,8 +259,9 @@ async def mark_gap(gap_id: str, fields: dict) -> None:
 
 
 async def create_output(run_id: str, workbook_url: str, summary: str,
-                        has_monthly: bool = False, has_quarterly: bool = False) -> dict:
-    output_id = "out_" + hashlib.sha1(f"{run_id}:{workbook_url}".encode("utf-8")).hexdigest()[:14]
+                        has_monthly: bool = False, has_quarterly: bool = False,
+                        platform: str = "") -> dict:
+    output_id = output_id_for(run_id, workbook_url, platform)
     found = await find_first(OUTPUT_TABLE, "output_id", output_id)
     fields = {
         "run_id": run_id,

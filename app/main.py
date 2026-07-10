@@ -140,7 +140,7 @@ async def cards_finance_confirm(year_month: str | None = None,
                                 dry_run: bool = False,
                                 frankie_only: bool = True,
                                 authorization: str | None = Header(None)):
-    """Send the real finance confirmation card for a month. Defaults to Frankie-only smoke."""
+    """Send platform-level monthly gross-profit confirmation cards. Defaults to Frankie-only smoke."""
     _check_auth(authorization)
     from . import card_workflow
     return await card_workflow.send_finance_confirm_for_month(

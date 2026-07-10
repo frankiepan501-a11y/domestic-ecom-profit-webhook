@@ -166,14 +166,16 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
     run_id = ledger.extract_text(of.get("run_id")) or ledger.extract_text(rf.get("run_id"))
     output_id = ledger.extract_text(of.get("output_id"))
     period = ledger.extract_text(rf.get("期间"))
+    platform = ledger.extract_text(of.get("平台"))
     workbook = ledger.extract_text(of.get("workbook链接"))
-    tax_summary = _short(ledger.extract_text(of.get("涉税核对摘要")) or "税务A_B核对 sheet 已随输出包生成，请财务复核差异解释。", 520)
     has_monthly = _truthy(of.get("产品毛利月度"))
-    has_quarterly = _truthy(of.get("产品毛利季度"))
     open_p0: list[str] = []
     exceptions: list[str] = []
     for g in gaps:
         gf = g.get("fields", {})
+        gap_platform = ledger.extract_text(gf.get("平台"))
+        if platform and gap_platform not in (platform, "全平台", ""):
+            continue
         p_level = ledger.extract_text(gf.get("P级"))
         status = ledger.extract_text(gf.get("处理结果")) or "待处理"
         can_finalize = bool(gf.get("是否可定稿"))
@@ -189,11 +191,11 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
             or (can_finalize and status not in ("已补文件", "确认无数据"))
         ):
             exceptions.append(desc)
-    gate_ok = (not open_p0) and has_monthly and has_quarterly
+    gate_ok = (not open_p0) and has_monthly
     open_text = "\n".join(open_p0[:6]) if open_p0 else "- 无未关闭 P0 缺口"
     exception_text = "\n".join(exceptions[:6]) if exceptions else "- 无 P1/临时估算例外"
     conclusion = "可进入财务定稿确认" if gate_ok else "仍需处理 gate 后再确认"
-    scope = "天猫、抖音、小红书、京东；淘宝/拼多多按本期口径暂缓，后续补做。"
+    scope = f"{platform} / {period} / 结算月口径" if platform else f"{period} / 结算月口径"
     cid = ledger.card_id("finance_confirm", run_id, output_id)
     nonce = str(int(time.time() * 1000))
     workbook_text = f"[打开自动化报表（已授权）]({workbook})" if workbook else "待生成"
@@ -201,18 +203,17 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
         _md(
             f"**结论**：{conclusion}\n"
             f"**期间**：{period}\n"
-            f"**纳入范围**：{scope}\n"
+            f"**本卡核对范围**：{scope}\n"
             f"**输出包**：{workbook_text}"
         ),
         _md(
             "**财务确认 Gate**\n"
             f"- P0缺口：{len(open_p0)}\n"
-            f"- 产品毛利_月度：{'✅ 已生成' if has_monthly else '❌ 缺失'}\n"
-            f"- 产品毛利_季度：{'✅ 已生成' if has_quarterly else '❌ 缺失'}\n"
-            f"- 税务A_B核对：已随输出包生成"
+            f"- 当月毛利报表：{'✅ 已生成' if has_monthly else '❌ 缺失'}\n"
+            "- 统计口径：结算月\n"
+            "- 涉税金额：不在本卡核对，季度初另走涉税核对卡"
         ),
         _md(
-            f"**涉税核对摘要**\n{tax_summary}\n\n"
             f"**未关闭 P0**\n{open_text}\n\n"
             f"**P1/例外**\n{exception_text}"
         ),
@@ -221,23 +222,24 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
             "tag": "action",
             "actions": [
                 _button("确认定稿", _payload("domestic_profit_finance_approve", run_id, "finance_confirm", cid,
-                                      output_id=output_id, period=period, decision="approve",
+                                      output_id=output_id, platform=platform, period=period, decision="approve",
                                       nonce=nonce), button_type="primary"),
                 _button("退回-资料缺口", _payload("domestic_profit_finance_return_data_gap", run_id,
                                            "finance_confirm", cid, output_id=output_id,
-                                           period=period, decision="return_data_gap", nonce=nonce)),
+                                           platform=platform, period=period, decision="return_data_gap", nonce=nonce)),
                 _button("退回-口径问题", _payload("domestic_profit_finance_return_method_gap", run_id,
                                            "finance_confirm", cid, output_id=output_id,
-                                           period=period, decision="return_method_gap", nonce=nonce)),
+                                           platform=platform, period=period, decision="return_method_gap", nonce=nonce)),
                 _button("接受临时估算", _payload("domestic_profit_finance_accept_temp", run_id,
                                            "finance_confirm", cid, output_id=output_id,
-                                           period=period, decision="accept_temp", nonce=nonce)),
+                                           platform=platform, period=period, decision="accept_temp", nonce=nonce)),
             ],
         },
         _note("确认会写输出报表台、报表运行台和审计日志，并 PATCH 原卡。"),
     ]
     template = "green" if gate_ok else "orange"
-    return _base_card(f"🟡 [FIN·P2] 国内电商毛利报表定稿确认 · {period}", template, elements)
+    title_platform = f"{platform}毛利报表" if platform else "毛利报表"
+    return _base_card(f"🟡 [FIN·P2] 国内电商{title_platform}定稿确认 · {period}", template, elements)
 
 
 def processed_card(title: str, message: str, *, ok: bool = True, details: dict | None = None) -> dict:
