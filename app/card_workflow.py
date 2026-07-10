@@ -1008,6 +1008,11 @@ async def handle_callback(body: dict) -> dict:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回口径问题"})
             await ledger.update_run(run_id, "财务退回口径问题", action, f"财务退回：{platform_prefix}口径问题")
             result_message = f"已退回{platform_prefix}口径问题，等待口径修正。"
+        elif action == "domestic_profit_finance_return_data_and_method_gap":
+            if out:
+                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回资料缺口和口径问题"})
+            await ledger.update_run(run_id, "财务退回资料和口径问题", action, f"财务退回：{platform_prefix}资料缺口和口径问题")
+            result_message = f"已退回{platform_prefix}资料缺口和口径问题，后续需要补资料并修正/解释金额口径后再确认。"
         elif action == "domestic_profit_finance_accept_temp":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
@@ -1020,13 +1025,13 @@ async def handle_callback(body: dict) -> dict:
                 done, total = await _finance_platform_done_summary(run_id, workbook_url)
                 if done >= total:
                     await ledger.update_run(run_id, "财务接受临时估算", action, "四个平台毛利确认卡均已完成，含临时估算")
-                    result_message = f"{platform} 已接受临时估算；{done}/{total} 平台已完成，进入旁路终态。"
+                    result_message = f"{platform} 已确认定稿并接受上述例外；{done}/{total} 平台已完成，进入旁路终态。"
                 else:
                     await ledger.update_run(run_id, "待财务确认", action, f"{platform} 已接受临时估算，等待其他平台确认")
-                    result_message = f"{platform} 已接受临时估算；当前 {done}/{total} 平台已完成。"
+                    result_message = f"{platform} 已确认定稿并接受上述例外；当前 {done}/{total} 平台已完成。"
             else:
                 await ledger.update_run(run_id, "财务接受临时估算", action, "财务接受临时估算旁路终态")
-                result_message = "财务已接受临时估算，进入旁路终态。"
+                result_message = "财务已确认定稿并接受临时估算/暂缓说明，进入旁路终态。"
     else:
         ok = False
         result_message = f"未知 action: {action}"

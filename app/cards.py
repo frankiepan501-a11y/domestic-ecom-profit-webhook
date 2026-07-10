@@ -295,6 +295,7 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
     blocking_text = "\n".join(open_blockers[:6]) if open_blockers else "- 未发现需要退回处理的资料缺失或成本缺失。"
     issue_text = "\n".join(f"- {i}" for i in data_issues[:8]) if data_issues else "- 未发现需要特别说明的金额异常；如有业务异常请按按钮退回。"
     exception_text = "\n".join(exceptions[:6]) if exceptions else "- 无临时估算或本期暂缓说明。"
+    has_exceptions = bool(exceptions)
     conclusion = "资料和成本检查已通过，可确认本平台毛利报表定稿" if gate_ok else "仍有资料/成本/报表缺失，建议退回处理后再定稿"
     scope = f"{platform or '全平台'} / {period} / 结算月口径"
     cid = ledger.card_id("finance_confirm", run_id, output_id)
@@ -303,6 +304,21 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
     header_template = "green" if gate_ok else "orange"
     title_platform = f"{platform}毛利报表" if platform else "毛利报表"
     link_actions = [{"tag": "action", "actions": [_url_button(f"打开{platform or '本期'}毛利报表", workbook)]}] if workbook else []
+    confirm_button = (
+        _button("确认定稿（接受上述例外）", _payload("domestic_profit_finance_accept_temp", run_id,
+                                             "finance_confirm", cid, output_id=output_id,
+                                             platform=platform, period=period, decision="accept_temp", nonce=nonce),
+                button_type="primary")
+        if has_exceptions
+        else _button("确认该平台定稿", _payload("domestic_profit_finance_approve", run_id, "finance_confirm", cid,
+                                  output_id=output_id, platform=platform, period=period, decision="approve",
+                                  nonce=nonce), button_type="primary")
+    )
+    confirm_text = (
+        "- **确认定稿（接受上述例外）**：用于财务认可本平台毛利报表，同时接受卡片里列出的临时估算或本期暂缓说明；这个按钮本身就等于“确认定稿”，不需要再点其他确认按钮。\n"
+        if has_exceptions
+        else "- **确认该平台定稿**：用于财务认可本平台本月毛利报表，且没有需要接受的临时估算或本期暂缓事项；系统记录确认人和确认时间。四个平台都确认后，本月国内电商毛利报表自动归档。\n"
+    )
     elements = [
         _md(f"**请财务判断**：{title_platform}是否可以定稿\n**当前结论**：{conclusion}"),
         _fields([
@@ -324,27 +340,26 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
         ),
         _md(
             "**下方按钮按了以后会发生什么**\n"
-            "- **确认该平台定稿**：表示财务认可本平台本月毛利报表，可以作为定稿版本；系统记录确认人和确认时间。四个平台都确认后，本月国内电商毛利报表自动归档。\n"
+            "这些按钮是一次性财务决定。确认类按钮会直接结束本平台确认；如果资料和金额口径同时有问题，请点“同时退回资料和金额问题”。\n"
+            f"{confirm_text}"
             "- **退回资料缺失**：用于发现结算单、广告证明、物流账单、成本资料等原始资料不完整；系统记录为“资料缺失退回”，后续由运营补资料后重新计算/确认。\n"
             "- **退回金额/口径异常**：用于资料已齐，但金额、费用归类、退款/结算口径、负毛利原因等需要重新解释或重算；系统记录为“金额或口径异常退回”，等待修正后再发确认卡。\n"
-            "- **接受本期临时估算**：用于财务同意本期先按卡片说明的临时估算或暂缓口径定稿；系统会保留例外说明和确认记录，后续补齐资料时再调整。"
+            "- **同时退回资料和金额问题**：用于资料不完整，同时金额或口径也需要解释/重算；系统会同时记录两类问题，后续补资料并修正口径后再发确认卡。"
         ),
         {"tag": "hr"},
         {
             "tag": "action",
             "actions": [
-                _button("确认该平台定稿", _payload("domestic_profit_finance_approve", run_id, "finance_confirm", cid,
-                                           output_id=output_id, platform=platform, period=period, decision="approve",
-                                           nonce=nonce), button_type="primary"),
+                confirm_button,
                 _button("退回资料缺失", _payload("domestic_profit_finance_return_data_gap", run_id,
                                            "finance_confirm", cid, output_id=output_id,
                                            platform=platform, period=period, decision="return_data_gap", nonce=nonce)),
                 _button("退回金额/口径异常", _payload("domestic_profit_finance_return_method_gap", run_id,
                                                 "finance_confirm", cid, output_id=output_id,
                                                 platform=platform, period=period, decision="return_method_gap", nonce=nonce)),
-                _button("接受本期临时估算", _payload("domestic_profit_finance_accept_temp", run_id,
-                                                "finance_confirm", cid, output_id=output_id,
-                                                platform=platform, period=period, decision="accept_temp", nonce=nonce)),
+                _button("同时退回资料和金额问题", _payload("domestic_profit_finance_return_data_and_method_gap", run_id,
+                                                   "finance_confirm", cid, output_id=output_id,
+                                                   platform=platform, period=period, decision="return_data_and_method_gap", nonce=nonce)),
             ],
         },
         _note(f"确认后系统会记录财务决定，并把原卡改成已处理态。报表批次：{run_id}。"),
