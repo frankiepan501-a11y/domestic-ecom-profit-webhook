@@ -345,6 +345,23 @@ async def _send_card_to_union_targets(card: dict, targets: dict[str, str]) -> li
     return sent
 
 
+async def _send_finance_confirm_card(card: dict, *, frankie_only: bool = False) -> tuple[list[str], list[str], str]:
+    if frankie_only:
+        targets = await _finance_union_targets(frankie_only=True)
+        sent = await _send_card_to_union_targets(card, targets)
+        return sent, list(targets.values()), "private"
+    if not config.FINANCE_CONFIRM_CHAT_ID:
+        raise RuntimeError("FINANCE_CONFIRM_CHAT_ID is required for production finance confirmation cards")
+    res = await feishu.send_interactive_chat(config.FINANCE_CONFIRM_CHAT_ID, card, use_event_app=True)
+    mid = (res.get("data") or {}).get("message_id")
+    if not mid:
+        raise RuntimeError(
+            "finance confirmation group card send failed: "
+            f"code={res.get('code')} msg={res.get('msg')}"
+        )
+    return [mid], [config.FINANCE_CONFIRM_CHAT_NAME], "group"
+
+
 async def send_monthly_intake(year_month: str | None = None, *, force: bool = False,
                               dry_run: bool = False, frankie_only: bool = False) -> dict:
     year_month = year_month or _prev_month()
@@ -629,14 +646,19 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     platform_output = _with_output_platform(output, platform)
     report_summary = await _platform_report_summary(platform_output, platform)
     card = cards.finance_confirm_card(platform_output, run, gaps, report_summary=report_summary)
-    targets = await _finance_union_targets(frankie_only=frankie_only)
-    sent = await _send_card_to_union_targets(card, targets)
+    sent, targets, target_mode = await _send_finance_confirm_card(card, frankie_only=frankie_only)
     output_id = _ftext(platform_output.get("fields", {}).get("output_id"))
     if sent:
         await ledger.update(ledger.OUTPUT_TABLE, platform_output["record_id"], {"确认卡message_id": ",".join(sent)})
     await ledger.update_run(run_id, "待财务确认", "send_platform_finance_confirm_card",
                             f"等待财务确认 {platform} 当月毛利报表")
-    return {"sent": sent, "targets": list(targets.values()), "output_id": output_id, "platform": platform}
+    return {
+        "sent": sent,
+        "targets": targets,
+        "target_mode": target_mode,
+        "output_id": output_id,
+        "platform": platform,
+    }
 
 
 async def send_platform_finance_cards(run_id: str, output: dict,
@@ -872,6 +894,8 @@ async def send_finance_confirm_for_month(year_month: str | None = None, *,
             "dry_run": True,
             "run_id": run_id,
             "platforms": list(FINANCE_CONFIRM_PLATFORMS),
+            "target_mode": "private" if frankie_only else "group",
+            "targets": ["潘志聪"] if frankie_only else [config.FINANCE_CONFIRM_CHAT_NAME],
             "cards": cards_by_platform,
         }
     return await send_finance_card(run_id, output, frankie_only=frankie_only)

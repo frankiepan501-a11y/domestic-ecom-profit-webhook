@@ -30,6 +30,7 @@
 | TASK_APP_TOKEN | IKyGb1jydaZW7msBzAicViiWngg | 任务台多维表 |
 | TASK_TABLE_ID | tblMYHXRHZ0GaqMh | |
 | FRANKIE_OPEN_ID | ou_629ce01f4bc31de078e10fcb038dbf78 | |
+| FINANCE_CONFIRM_CHAT_ID | oc_6b2da626d80eb6284bbe9dcf895030b9 | 财务确认卡正式派送群；Frankie-only 测试不走该群 |
 | WEBHOOK_BEARER_TOKEN | ecom-profit-webhook-2026 | n8n 调用鉴权 |
 
 ## v0.1 限制

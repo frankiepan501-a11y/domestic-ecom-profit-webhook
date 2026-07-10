@@ -115,3 +115,11 @@ REMIND_OPS_DEPT_ROOTS = ["od-2e75af50a81b16d829e8b345f9137a49"]      # 国内电
 REMIND_FINANCE_DEPT_ROOTS = ["od-ad59abe171a6b0a419a5e3969fb349ad"]  # 财务部
 REMIND_DEADLINE_DAY = "8 号"  # 财务督促国内电商部完成的期限
 TASK_PANEL_URL = "https://u1wpma3xuhr.feishu.cn/base/IKyGb1jydaZW7msBzAicViiWngg"
+
+# 财务确认卡生产路由: 一个平台一张卡发到财务群, 不按财务人员逐个私聊。
+# Frankie-only 测试仍走 Frankie 私聊, 用于上线前验证 callback/PATCH/idempotency。
+FINANCE_CONFIRM_CHAT_ID = os.getenv(
+    "FINANCE_CONFIRM_CHAT_ID",
+    "oc_6b2da626d80eb6284bbe9dcf895030b9",
+)
+FINANCE_CONFIRM_CHAT_NAME = os.getenv("FINANCE_CONFIRM_CHAT_NAME", "财务部工作交流群")
