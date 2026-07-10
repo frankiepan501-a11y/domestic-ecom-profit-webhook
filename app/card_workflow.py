@@ -414,10 +414,18 @@ async def send_sample_cards(year_month: str | None = None, *, send: bool = False
             "财务决定": "",
         }
     }, {"fields": {"run_id": run_id, "期间": year_month}}, [])
+    return_followup_card = cards.finance_return_followup_card(
+        run_id=run_id,
+        period=year_month,
+        platform="天猫",
+        output_id=f"out_smoke_{year_month.replace('-', '')}",
+        return_kind="combined",
+    )
     sample_cards = {
         "ops_submit": ops_card,
         "p0_gap": gap_card,
         "finance_confirm": finance_card,
+        "finance_return_followup": return_followup_card,
     }
     if not send:
         return {"dry_run": True, "run_id": run_id, "cards": sample_cards}
@@ -481,6 +489,61 @@ async def send_open_gap_cards(run_id: str, *, frankie_only: bool = False) -> lis
             await ledger.mark_gap(gid, {"message_id": ",".join(mids)})
             sent.extend(mids)
     return sent
+
+
+async def _finance_return_targets(return_kind: str) -> dict[str, str]:
+    if config.CARD_WORKFLOW_FRANKIE_ONLY:
+        return {config.FRANKIE_UNION_ID: "潘志聪"}
+    if return_kind == "data":
+        return await _ops_union_targets(frankie_only=False)
+    if return_kind == "combined":
+        targets = await _ops_union_targets(frankie_only=False)
+        targets.setdefault(config.FRANKIE_UNION_ID, "潘志聪")
+        return targets
+    return {config.FRANKIE_UNION_ID: "潘志聪"}
+
+
+async def _send_finance_return_followup(run_id: str, period: str, platform: str,
+                                        output_id: str, return_kind: str,
+                                        output: dict | None = None) -> dict:
+    output = output or (await ledger.find_first(ledger.OUTPUT_TABLE, "output_id", output_id) if output_id else None)
+    workbook_url = _link_url((output or {}).get("fields", {}).get("workbook链接"))
+    if not period:
+        run = await ledger.find_first(ledger.RUN_TABLE, "run_id", run_id)
+        period = _ftext((run or {}).get("fields", {}).get("期间"))
+    card = cards.finance_return_followup_card(
+        run_id=run_id,
+        period=period,
+        platform=platform,
+        output_id=output_id,
+        return_kind=return_kind,
+        workbook_url=workbook_url,
+    )
+    targets = await _finance_return_targets(return_kind)
+    sent = await _send_card_to_union_targets(card, targets)
+    for mid in sent:
+        await ledger.append_message_id(run_id, mid)
+    audit_suffix = ledger.payload_hash({
+        "run_id": run_id,
+        "output_id": output_id,
+        "platform": platform,
+        "return_kind": return_kind,
+        "message_ids": sent,
+        "ts": ledger.now_ms(),
+    })[:12]
+    await ledger.write_audit(
+        f"send_finance_return_followup:{run_id}:{output_id}:{platform}:{return_kind}:{audit_suffix}",
+        "send_finance_return_followup_card",
+        "system",
+        run_id,
+        "output",
+        output_id,
+        {},
+        {"message_ids": sent, "return_kind": return_kind, "platform": platform},
+        {"frankie_only": config.CARD_WORKFLOW_FRANKIE_ONLY, "targets": list(targets.values())},
+        "sent" if sent else "not_sent",
+    )
+    return {"sent": sent, "targets": list(targets.values()), "return_kind": return_kind}
 
 
 async def initial_gate_and_maybe_run(run_id: str, period: str) -> dict:
@@ -972,6 +1035,40 @@ async def handle_callback(body: dict) -> dict:
             result_message = "已转财务判断。"
         gate = await initial_gate_and_maybe_run(run_id, period)
         result_message += f" 当前P0缺口数={gate.get('open_p0', 0)}。"
+    elif action.startswith("domestic_profit_return_"):
+        output_id = str(value.get("output_id") or "")
+        platform = str(value.get("platform") or "")
+        platform_prefix = f"{platform}：" if platform else ""
+        target_type = "output"
+        target_id = output_id
+        out = await ledger.find_first(ledger.OUTPUT_TABLE, "output_id", output_id) if output_id else None
+        if action == "domestic_profit_return_data_resolved":
+            await ledger.update_run(run_id, "资料初检中", action, f"{platform_prefix}退回资料已补，重新检查资料")
+            gate = await initial_gate_and_maybe_run(run_id, period)
+            result_message = (
+                f"{platform_prefix}已进入资料重新检查。"
+                f"当前需补资料/成本缺口数={gate.get('open_p0', 0)}；"
+                "无缺口时系统会自动重新试算并再发该平台确认卡。"
+            )
+        elif action == "domestic_profit_return_method_resolved":
+            await ledger.update_run(run_id, "待AI试算", action, f"{platform_prefix}金额/口径已修正，重新试算")
+            await start_trial_run(run_id)
+            result_message = f"{platform_prefix}已重新进入试算；生成新报表后会自动重新发送财务确认卡。"
+        elif action == "domestic_profit_return_combined_resolved":
+            await ledger.update_run(run_id, "资料初检中", action, f"{platform_prefix}资料和金额口径已处理，重新检查资料")
+            gate = await initial_gate_and_maybe_run(run_id, period)
+            result_message = (
+                f"{platform_prefix}资料和金额口径处理已记录，已重新检查资料。"
+                f"当前需补资料/成本缺口数={gate.get('open_p0', 0)}；"
+                "无缺口时系统会自动重新试算并再发确认卡。"
+            )
+        else:
+            ok = False
+            result_message = f"未知退回处理 action: {action}"
+        if out and ok:
+            await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
+                "财务决定": f"{platform_prefix}退回问题已处理，待重新确认",
+            })
     elif action.startswith("domestic_profit_finance_"):
         output_id = str(value.get("output_id") or "")
         platform = str(value.get("platform") or "")
@@ -1002,17 +1099,29 @@ async def handle_callback(body: dict) -> dict:
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回资料缺口"})
             await ledger.update_run(run_id, "财务退回资料缺口", action, f"财务退回：{platform_prefix}资料缺口")
-            result_message = f"已退回{platform_prefix}资料缺口，状态回到运营补件链路。"
+            follow = await _send_finance_return_followup(run_id, period, platform, output_id, "data", out)
+            result_message = (
+                f"已退回{platform_prefix}资料缺口，状态回到运营补件链路。"
+                f"已发送后续处理卡 {len(follow.get('sent') or [])} 张。"
+            )
         elif action == "domestic_profit_finance_return_method_gap":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回口径问题"})
             await ledger.update_run(run_id, "财务退回口径问题", action, f"财务退回：{platform_prefix}口径问题")
-            result_message = f"已退回{platform_prefix}口径问题，等待口径修正。"
+            follow = await _send_finance_return_followup(run_id, period, platform, output_id, "method", out)
+            result_message = (
+                f"已退回{platform_prefix}金额/口径问题，等待修正或解释后重新试算。"
+                f"已发送后续处理卡 {len(follow.get('sent') or [])} 张。"
+            )
         elif action == "domestic_profit_finance_return_data_and_method_gap":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回资料缺口和口径问题"})
             await ledger.update_run(run_id, "财务退回资料和口径问题", action, f"财务退回：{platform_prefix}资料缺口和口径问题")
-            result_message = f"已退回{platform_prefix}资料缺口和口径问题，后续需要补资料并修正/解释金额口径后再确认。"
+            follow = await _send_finance_return_followup(run_id, period, platform, output_id, "combined", out)
+            result_message = (
+                f"已退回{platform_prefix}资料缺口和金额/口径问题，后续需要补资料并修正/解释后再确认。"
+                f"已发送后续处理卡 {len(follow.get('sent') or [])} 张。"
+            )
         elif action == "domestic_profit_finance_accept_temp":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {

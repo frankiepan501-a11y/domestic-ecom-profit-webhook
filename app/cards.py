@@ -367,6 +367,86 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
     return _base_card(f"🟡 [FIN·P2] {title_platform}定稿确认 · {period}", header_template, elements)
 
 
+def finance_return_followup_card(*, run_id: str, period: str, platform: str,
+                                 output_id: str, return_kind: str,
+                                 workbook_url: str = "") -> dict:
+    cid = ledger.card_id("finance_return", run_id, f"{output_id}:{return_kind}")
+    nonce = str(int(time.time() * 1000))
+    upload_url = f"{config.PUBLIC_BASE_URL}/upload?run_id={run_id}&token={ledger.upload_token(run_id, 'run')}"
+    platform_text = platform or "本平台"
+    kind_map = {
+        "data": {
+            "title": f"{platform_text}毛利报表退回：需要补资料",
+            "decision": "财务认为原始资料不完整，暂不能定稿。",
+            "need": (
+                "- 补齐结算单、广告证明、物流账单、采购成本资料等缺失文件。\n"
+                "- 如果确实没有数据，请在上传页按店铺点“无广告消耗/无结算”等确认，并写清楚原因。\n"
+                "- 补完后点下面按钮，系统会重新检查资料；资料通过后会重新试算并再发确认卡。"
+            ),
+            "button": "已补资料，重新检查",
+            "action": "domestic_profit_return_data_resolved",
+            "template": "orange",
+        },
+        "method": {
+            "title": f"{platform_text}毛利报表退回：需要修正金额/口径",
+            "decision": "财务认为资料本身可能齐，但金额、费用归类、退款/结算口径或负毛利原因需要重新解释或重算。",
+            "need": (
+                "- 检查销售额、退款、平台费、广告费、采购成本、物流费、其他费用的归类和金额。\n"
+                "- 如只是业务原因导致负毛利，请把原因写进报表说明；如是计算口径问题，请修正后重新出报表。\n"
+                "- 修正完成后点下面按钮，系统会基于当前输出包重新发送该平台财务确认卡。"
+            ),
+            "button": "已修正口径，重发财务确认",
+            "action": "domestic_profit_return_method_resolved",
+            "template": "orange",
+        },
+        "combined": {
+            "title": f"{platform_text}毛利报表退回：资料和金额口径都要处理",
+            "decision": "财务同时退回资料缺失和金额/口径异常，本平台暂不能定稿。",
+            "need": (
+                "- 先补齐缺失资料或无数据证明。\n"
+                "- 同时修正或解释金额、费用归类、退款/结算口径、负毛利原因。\n"
+                "- 处理完成后点下面按钮，系统会重新检查资料；通过后重新试算并再发确认卡。"
+            ),
+            "button": "已补资料并修正，重新检查",
+            "action": "domestic_profit_return_combined_resolved",
+            "template": "red",
+        },
+    }
+    spec = kind_map.get(return_kind, kind_map["data"])
+    payload = _payload(
+        spec["action"],
+        run_id,
+        "finance_return",
+        cid,
+        output_id=output_id,
+        platform=platform,
+        period=period,
+        decision=f"{return_kind}_resolved",
+        nonce=nonce,
+    )
+    link_buttons = [_url_button("打开资料上传页", upload_url)]
+    if workbook_url:
+        link_buttons.append(_url_button(f"打开{platform_text}毛利报表", workbook_url))
+    elements = [
+        _md(
+            f"**财务决定**：{spec['decision']}\n"
+            f"**平台**：{platform_text}\n"
+            f"**期间**：{period or '-'}\n"
+            f"**下一步要做什么**\n{spec['need']}"
+        ),
+        {"tag": "action", "actions": link_buttons},
+        {"tag": "hr"},
+        {
+            "tag": "action",
+            "actions": [
+                _button(spec["button"], payload, button_type="primary"),
+            ],
+        },
+        _note(f"处理完成后系统会写 ledger、审计日志并 PATCH 原卡。报表批次：{run_id}。"),
+    ]
+    return _base_card(f"🟠 [FIN·P1] {spec['title']} · {period}", spec["template"], elements)
+
+
 def processed_card(title: str, message: str, *, ok: bool = True, details: dict | None = None) -> dict:
     template = "green" if ok else "grey"
     extra = ""
