@@ -92,6 +92,7 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - 修复 2026-07-09 重跑时成本缺口告警刷屏：`REPORT_SUPPRESS_NOTIFY=1` 现在同时抑制成本告警；告警只在最终结算签核口径产生 `采购成本` P0 时发送，并写审计幂等键，重复重跑不会重复弹。
 - 新增 `/cards/finance-confirm`：可从旧任务台最新报表链接补建输出报表台并发送真实财务确认卡，默认 `frankie_only=true`。2026-06 真实卡已发 Frankie 测试，message_id=`om_x100b6bcff9b40ca0c2377623b97ce94`。
 - 财务确认卡格式已改为结论优先：输出包、纳入范围、P0=0、产品毛利月度/季度 gate、税务A_B、未关闭 P0、P1/例外；不再堆历史已补文件缺口。
+- 修复 2026-07-10 财务确认卡输出包权限缺口：现有 2026-06 报表已补授权给 Frankie、吴晓丹和财务/采购/物流仓储/电商运营部门成员；后续 `send_finance_card` 发卡前会对 sheets 输出包再次执行 `_grant_report_collaborators`，避免卡片链接可见但负责人无权打开。
 
 ## 剩余风险和下一步
 

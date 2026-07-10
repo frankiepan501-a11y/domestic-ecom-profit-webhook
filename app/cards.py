@@ -196,7 +196,7 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict]) -> dict:
     scope = "天猫、抖音、小红书、京东；淘宝/拼多多按本期口径暂缓，后续补做。"
     cid = ledger.card_id("finance_confirm", run_id, output_id)
     nonce = str(int(time.time() * 1000))
-    workbook_text = f"[打开自动化报表]({workbook})" if workbook else "待生成"
+    workbook_text = f"[打开自动化报表（已授权）]({workbook})" if workbook else "待生成"
     elements = [
         _md(
             f"**结论**：{conclusion}\n"

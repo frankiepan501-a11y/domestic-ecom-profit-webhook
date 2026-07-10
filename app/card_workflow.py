@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import UploadFile
 
-from . import cards, config, feishu, ledger, task_runner, task_seeder
+from . import cards, config, feishu, ledger, task_runner, task_seeder, writer
 
 
 SHOP_FILE_FIELDS = [
@@ -553,6 +553,7 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     output = output or await ledger.latest_output(run_id)
     if not run or not output:
         return {"sent": [], "error": "missing run/output"}
+    await _grant_output_workbook_access(output)
     gaps = await ledger.gaps_for_run(run_id)
     card = cards.finance_confirm_card(output, run, gaps)
     targets = await _finance_union_targets(frankie_only=frankie_only)
@@ -563,6 +564,22 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     await ledger.update_run(run_id, "待财务确认", "send_finance_confirm_card",
                             "等待财务在卡片确认/退回/接受临时估算")
     return {"sent": sent, "targets": list(targets.values()), "output_id": output_id}
+
+
+def _sheet_token_from_url(url: str) -> str:
+    if "/sheets/" not in url:
+        return ""
+    return url.rstrip("/").split("/")[-1].split("?")[0].split("#")[0]
+
+
+async def _grant_output_workbook_access(output: dict) -> dict:
+    """Finance cards must never point at a workbook the owner cannot open."""
+    fields = output.get("fields", {})
+    workbook_url = _link_url(fields.get("workbook链接"))
+    token = _sheet_token_from_url(workbook_url)
+    if not token:
+        return {"granted": 0, "failed": 0, "members": 0, "skipped": "not_sheet_url"}
+    return await writer._grant_report_collaborators(token)
 
 
 def _link_url(value: Any) -> str:
