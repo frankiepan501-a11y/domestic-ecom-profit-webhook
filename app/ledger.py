@@ -308,3 +308,28 @@ async def write_audit(idempotency_key: str, action: str, actor_open_id: str,
         "source_message_id": source_message_id,
         "created_at": now_ms(),
     })
+
+
+async def finalize_audit(idempotency_key: str, action: str, actor_open_id: str,
+                         run_id: str, target_type: str, target_id: str,
+                         before: Any, after: Any, payload: Any, result: str,
+                         source_message_id: str = "") -> None:
+    fields = {
+        "action": action,
+        "actor_open_id": actor_open_id,
+        "target_type": target_type,
+        "target_id": target_id,
+        "run_id": run_id,
+        "before_json": compact_json(before, limit=9000),
+        "after_json": compact_json(after, limit=9000),
+        "payload_hash": payload_hash(payload),
+        "result": result,
+        "source_message_id": source_message_id,
+    }
+    rec = await find_first(AUDIT_TABLE, "idempotency_key", idempotency_key)
+    if rec:
+        await update(AUDIT_TABLE, rec["record_id"], fields)
+        return
+    fields["idempotency_key"] = idempotency_key
+    fields["created_at"] = now_ms()
+    await create(AUDIT_TABLE, fields)

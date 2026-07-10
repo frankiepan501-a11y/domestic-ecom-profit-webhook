@@ -977,6 +977,19 @@ async def handle_callback(body: dict) -> dict:
         })
         patch = await _patch_or_reply(ctx["message_id"], ctx["chat_id"], ctx["operator_open_id"], card)
         return {"duplicate": True, "patch": patch}
+    await ledger.write_audit(
+        idempotency_key,
+        action,
+        ctx["operator_open_id"],
+        run_id,
+        "callback",
+        run_id,
+        {},
+        {"message": "callback started"},
+        {"value": value, "form_value": ctx["form_value"]},
+        "started",
+        ctx["message_id"],
+    )
 
     before: dict[str, Any] = {}
     result_message = "已处理。"
@@ -1145,7 +1158,7 @@ async def handle_callback(body: dict) -> dict:
         ok = False
         result_message = f"未知 action: {action}"
 
-    await ledger.write_audit(
+    await ledger.finalize_audit(
         idempotency_key,
         action,
         ctx["operator_open_id"],
