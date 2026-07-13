@@ -542,7 +542,7 @@ async def run_profit(record_id: str) -> dict:
         await update_status(record_id, {
             "任务状态": "✅已完成",
             "计算完成时间": finished_ms,
-            "报表飞书链接": {"link": url, "text": f"(AI)国内电商毛利表-{year_month}"},
+            "报表飞书链接": {"link": url, "text": f"国内电商毛利表-{year_month}"},
             "错误日志": (f"结算文件驱动 | 店铺{len(set(r[2] for r in settlement.get('monthly_rows', [])) or raw['shop_keys'])} | 销售{all_paid:.2f} | "
                        f"净销售{net:.2f} | 毛利{all_gross:.2f} ({gross_rate:.1f}%)"
                        + (f" | 跳过{len(raw['skipped_shops'])}店" if raw["skipped_shops"] else "")),

@@ -6,13 +6,13 @@
 
 固定结构：
 
-`飞书云盘 / AI毛利报表总目录 / 渠道 / 平台文件夹 / (AI)平台毛利表-YYYY/MM`
+`飞书云盘 / 毛利报表总目录 / 渠道 / 平台文件夹 / 平台毛利表-YYYY/MM`
 
 ## 总目录
 
 | 层级 | 云盘文件夹 | folder_token |
 |---|---|---|
-| 总目录 | AI毛利报表总目录 | `XPWTfzDQklbVjCdI5KJc7Ta0nzc` |
+| 总目录 | 毛利报表总目录 | `XPWTfzDQklbVjCdI5KJc7Ta0nzc` |
 | 01 | 跨境电商 | `ACRMf0jSilL7NldWkmUczewGnPg` |
 | 02 | 国内电商 | `FepIf0fZslKKEudiuLQcBsT6nZg` |
 | 03 | 国内线下 | `EUX3fCjpblAnqRdFhERcbTpknJf` |
@@ -25,14 +25,14 @@
 
 | 渠道 | 平台/口径 | 云盘文件夹 | folder_token | 自动化落点 |
 |---|---|---|---|---|
-| 跨境电商 | 亚马逊 | AI亚马逊毛利表 | `ENdrft9AplsKfCdjODAcWG8Knoh` | n8n `CyapOmKK0hyIJoXY` |
-| 跨境电商 | 沃尔玛 | AI沃尔玛毛利表 | `DxeffKg1NlbijxdnAWJceGdpnbe` | n8n `HETbzME852KlYpFl` |
-| 跨境电商 | 独立站 | AI独立站毛利表 | `LV1tfrY86lmW0EdVUCQcBVbInod` | n8n `2q7WSFS5G9zQpfcN` / `rkG32295bx3dVcRh` / `zaCKHu69dOLFCP1I` / `s9u91925K049t7ud` |
-| 跨境电商 | TikTok Shop | AITikTok毛利表 | `WnelfhIYnldeEoddfLVcAgRsnuc` | n8n `Zw17LKlAL6W9TC0V` |
-| 跨境电商 | 速卖通 | AI速卖通毛利表 | `SYfofVwvMlFmvCdOWpQc0P2ZnMg` | n8n `eQBUjKcBr30zgBgy` |
-| 跨境电商 | 美客多 | AI美客多毛利表 | `Ki6SfAXcilwqELdoUi3cgcOSnHg` | 待接入 |
-| 跨境电商 | TEMU | AITEMU毛利表 | `TnDTfHQGAlhMg0dYSNdcjJrxnde` | 待接入 |
-| 国内电商 | 天猫/抖音/小红书/京东等 | AI国内电商毛利表 | `YmLtfYSA2lLIqBdEr6kcxCYLnvy` | `domestic-ecom-profit` |
+| 跨境电商 | 亚马逊 | 亚马逊毛利表 | `ENdrft9AplsKfCdjODAcWG8Knoh` | n8n `CyapOmKK0hyIJoXY` |
+| 跨境电商 | 沃尔玛 | 沃尔玛毛利表 | `DxeffKg1NlbijxdnAWJceGdpnbe` | n8n `HETbzME852KlYpFl` |
+| 跨境电商 | 独立站 | 独立站毛利表 | `LV1tfrY86lmW0EdVUCQcBVbInod` | n8n `2q7WSFS5G9zQpfcN` / `rkG32295bx3dVcRh` / `zaCKHu69dOLFCP1I` / `s9u91925K049t7ud` |
+| 跨境电商 | TikTok Shop | TikTok毛利表 | `WnelfhIYnldeEoddfLVcAgRsnuc` | n8n `Zw17LKlAL6W9TC0V` |
+| 跨境电商 | 速卖通 | 速卖通毛利表 | `SYfofVwvMlFmvCdOWpQc0P2ZnMg` | n8n `eQBUjKcBr30zgBgy` |
+| 跨境电商 | 美客多 | 美客多毛利表 | `Ki6SfAXcilwqELdoUi3cgcOSnHg` | 待接入 |
+| 跨境电商 | TEMU | TEMU毛利表 | `TnDTfHQGAlhMg0dYSNdcjJrxnde` | 待接入 |
+| 国内电商 | 天猫/抖音/小红书/京东等 | 国内电商毛利表 | `YmLtfYSA2lLIqBdEr6kcxCYLnvy` | `domestic-ecom-profit` |
 
 ## 迁移记录
 
@@ -51,14 +51,14 @@
 
 | 旧目录 | 旧 folder_token | 迁移后状态 |
 |---|---|---|
-| AI亚马逊毛利表 | `Gdu3f3QQ8ll3Vbd3JGmcqPdgnZd` | 已清空 |
-| AI沃尔玛毛利表 | `CCT6fMQELl0637d5EhTcLMSMncg` | 已清空 |
-| AI国内电商毛利表 | `Vr92fqp41lmUICdEMOgcl9uCnkg` | 停止作为新落点 |
+| 亚马逊毛利表-旧目录 | `Gdu3f3QQ8ll3Vbd3JGmcqPdgnZd` | 已清空；仅作历史识别 |
+| 沃尔玛毛利表-旧目录 | `CCT6fMQELl0637d5EhTcLMSMncg` | 已清空；仅作历史识别 |
+| 国内电商毛利表-旧目录 | `Vr92fqp41lmUICdEMOgcl9uCnkg` | 停止作为新落点；仅作历史识别 |
 
 ## 国内电商链路
 
-- 报表命名：`(AI)国内电商毛利表-YYYY/MM`
-- 默认云盘路径：`飞书云盘 / AI毛利报表总目录 / 02 国内电商 / AI国内电商毛利表`
+- 报表命名：`国内电商毛利表-YYYY/MM`
+- 默认云盘路径：`飞书云盘 / 毛利报表总目录 / 02 国内电商 / 国内电商毛利表`
 - 默认 folder token：`YmLtfYSA2lLIqBdEr6kcxCYLnvy`
 - 财务确认卡必须同时展示：
   - 本平台毛利报表链接
@@ -75,7 +75,7 @@ P0 当前不把运营上传的原始资料另存为云盘文件夹。原始资�
 
 后续如果财务需要在云盘直接处理原始文件，再新增“原始资料包”归档目录，例如：
 
-`AI毛利报表总目录 / 02 国内电商 / AI国内电商毛利表 / 原始资料包 / YYYY-MM / 平台 / 店铺`
+`毛利报表总目录 / 02 国内电商 / 国内电商毛利表 / 原始资料包 / YYYY-MM / 平台 / 店铺`
 
 该项是 P1，不阻断本次月度毛利确认卡。
 

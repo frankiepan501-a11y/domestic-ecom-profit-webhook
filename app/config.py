@@ -29,7 +29,7 @@ CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lo
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
 # ===== 毛利报表云盘归档 =====
-# 财务统一入口: AI毛利报表总目录 / 渠道 / 平台文件夹。
+# 财务统一入口: 毛利报表总目录 / 渠道 / 平台文件夹。
 # - Root: XPWTfzDQklbVjCdI5KJc7Ta0nzc
 # - 国内电商平台目录: YmLtfYSA2lLIqBdEr6kcxCYLnvy
 # 旧散落目录已迁出历史报表并停止作为新报表落点。
@@ -37,14 +37,14 @@ DOMESTIC_ECOM_REPORT_FOLDER_TOKEN = os.getenv(
     "DOMESTIC_ECOM_REPORT_FOLDER_TOKEN",
     "YmLtfYSA2lLIqBdEr6kcxCYLnvy",
 )
-DOMESTIC_ECOM_REPORT_FOLDER_NAME = os.getenv("DOMESTIC_ECOM_REPORT_FOLDER_NAME", "AI国内电商毛利表")
+DOMESTIC_ECOM_REPORT_FOLDER_NAME = os.getenv("DOMESTIC_ECOM_REPORT_FOLDER_NAME", "国内电商毛利表")
 DOMESTIC_ECOM_REPORT_FOLDER_URL = os.getenv(
     "DOMESTIC_ECOM_REPORT_FOLDER_URL",
     f"https://u1wpma3xuhr.feishu.cn/drive/folder/{DOMESTIC_ECOM_REPORT_FOLDER_TOKEN}",
 )
 DOMESTIC_ECOM_REPORT_FOLDER_PATH = os.getenv(
     "DOMESTIC_ECOM_REPORT_FOLDER_PATH",
-    "飞书云盘 / AI毛利报表总目录 / 02 国内电商 / AI国内电商毛利表",
+    "飞书云盘 / 毛利报表总目录 / 02 国内电商 / 国内电商毛利表",
 )
 DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC = os.getenv(
     "DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC",

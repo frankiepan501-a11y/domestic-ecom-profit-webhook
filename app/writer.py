@@ -108,7 +108,7 @@ async def _grant_report_collaborators(token: str) -> dict:
 
 
 async def create_report_spreadsheet(year_month: str) -> tuple[str, dict[str, str]]:
-    title = f"(AI)国内电商毛利表-{year_month.replace('-', '/')}"
+    title = f"国内电商毛利表-{year_month.replace('-', '/')}"
     folder_token = (config.DOMESTIC_ECOM_REPORT_FOLDER_TOKEN or "").strip() or None
     res = await feishu.sheets_create(title, folder_token=folder_token)
     token = res["data"]["spreadsheet"]["spreadsheet_token"]
