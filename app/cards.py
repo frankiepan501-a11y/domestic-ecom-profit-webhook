@@ -119,6 +119,12 @@ def _url_button(text: str, url: str) -> dict:
     }
 
 
+def _archive_link() -> str:
+    if config.DOMESTIC_ECOM_REPORT_FOLDER_URL:
+        return f"[{config.DOMESTIC_ECOM_REPORT_FOLDER_PATH}]({config.DOMESTIC_ECOM_REPORT_FOLDER_URL})"
+    return config.DOMESTIC_ECOM_REPORT_FOLDER_PATH or "云盘固定目录未配置"
+
+
 def _fields(items: list[tuple[str, str]], *, short: bool = True) -> dict:
     return {
         "tag": "div",
@@ -303,7 +309,12 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
     report_link_text = f"[打开{platform or '本期'}毛利报表]({workbook})" if workbook else "待生成"
     header_template = "green" if gate_ok else "orange"
     title_platform = f"{platform}毛利报表" if platform else "毛利报表"
-    link_actions = [{"tag": "action", "actions": [_url_button(f"打开{platform or '本期'}毛利报表", workbook)]}] if workbook else []
+    link_buttons = []
+    if workbook:
+        link_buttons.append(_url_button(f"打开{platform or '本期'}毛利报表", workbook))
+    if config.DOMESTIC_ECOM_REPORT_FOLDER_URL:
+        link_buttons.append(_url_button("打开国内电商报表云盘", config.DOMESTIC_ECOM_REPORT_FOLDER_URL))
+    link_actions = [{"tag": "action", "actions": link_buttons}] if link_buttons else []
     confirm_button = (
         _button("确认定稿（接受上述例外）", _payload("domestic_profit_finance_accept_temp", run_id,
                                              "finance_confirm", cid, output_id=output_id,
@@ -336,6 +347,8 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
             f"**财务需关注的金额异常**\n{issue_text}\n\n"
             f"**临时估算或本期暂缓说明**\n{exception_text}\n\n"
             f"**报表入口**：{report_link_text}\n"
+            f"**云盘位置**：{_archive_link()}\n"
+            f"**原始资料**：{config.DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC}\n"
             "- 涉税金额不在本月毛利卡核对，季度初另发“公司主体级”涉税核对卡。"
         ),
         _md(
@@ -427,11 +440,15 @@ def finance_return_followup_card(*, run_id: str, period: str, platform: str,
     link_buttons = [_url_button("打开资料上传页", upload_url)]
     if workbook_url:
         link_buttons.append(_url_button(f"打开{platform_text}毛利报表", workbook_url))
+    if config.DOMESTIC_ECOM_REPORT_FOLDER_URL:
+        link_buttons.append(_url_button("打开国内电商报表云盘", config.DOMESTIC_ECOM_REPORT_FOLDER_URL))
     elements = [
         _md(
             f"**财务决定**：{spec['decision']}\n"
             f"**平台**：{platform_text}\n"
             f"**期间**：{period or '-'}\n"
+            f"**云盘位置**：{_archive_link()}\n"
+            f"**原始资料**：{config.DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC}\n"
             f"**下一步要做什么**\n{spec['need']}"
         ),
         {"tag": "action", "actions": link_buttons},

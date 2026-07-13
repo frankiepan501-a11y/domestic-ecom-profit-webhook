@@ -560,7 +560,12 @@ async def run_profit(record_id: str) -> dict:
             f"销售额: ¥{all_paid:.2f}\n"
             f"净销售: ¥{net:.2f}\n"
             f"毛利额: ¥{all_gross:.2f} ({gross_rate:.1f}%)"
-            + skip_txt + f"\n\n报表: {url}\n📌 请注意查收")
+            + skip_txt
+            + f"\n\n报表: {url}"
+            + f"\n云盘位置: {config.DOMESTIC_ECOM_REPORT_FOLDER_PATH}"
+            + f"\n云盘文件夹: {config.DOMESTIC_ECOM_REPORT_FOLDER_URL}"
+            + f"\n原始资料: {config.DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC}"
+            + "\n📌 请注意查收")
         # REPORT_SUPPRESS_NOTIFY=1 时静默重生(修复重跑用), 不打扰收件人; 缺省/0 正常通知。
         if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
             print("  ⏭ 通知已抑制 (REPORT_SUPPRESS_NOTIFY)")

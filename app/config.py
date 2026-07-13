@@ -28,6 +28,29 @@ CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "
 CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lower() == "true"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
+# ===== 毛利报表云盘归档 =====
+# 历史跨境链路采用“平台/渠道固定文件夹 + 文件名带月份”的方式：
+# - AI亚马逊毛利表: Gdu3f3QQ8ll3Vbd3JGmcqPdgnZd
+# - AI沃尔玛毛利表: CCT6fMQELl0637d5EhTcLMSMncg
+# 国内电商按同一规范单独归档，避免财务只能从卡片链接找报表。
+DOMESTIC_ECOM_REPORT_FOLDER_TOKEN = os.getenv(
+    "DOMESTIC_ECOM_REPORT_FOLDER_TOKEN",
+    "Vr92fqp41lmUICdEMOgcl9uCnkg",
+)
+DOMESTIC_ECOM_REPORT_FOLDER_NAME = os.getenv("DOMESTIC_ECOM_REPORT_FOLDER_NAME", "AI国内电商毛利表")
+DOMESTIC_ECOM_REPORT_FOLDER_URL = os.getenv(
+    "DOMESTIC_ECOM_REPORT_FOLDER_URL",
+    f"https://u1wpma3xuhr.feishu.cn/drive/folder/{DOMESTIC_ECOM_REPORT_FOLDER_TOKEN}",
+)
+DOMESTIC_ECOM_REPORT_FOLDER_PATH = os.getenv(
+    "DOMESTIC_ECOM_REPORT_FOLDER_PATH",
+    "飞书云盘 / AI国内电商毛利表",
+)
+DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC = os.getenv(
+    "DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC",
+    "运营原始资料目前归档在资料清单/附件台和旧任务台附件字段；财务如需核原始文件，从卡片上传页或 Base ledger 查看。",
+)
+
 # 任务台字段 ID
 FIELD_IDS = {
     "任务标题": "fldrvBum5E",
