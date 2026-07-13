@@ -31,8 +31,8 @@
 | TASK_TABLE_ID | tblMYHXRHZ0GaqMh | |
 | FRANKIE_OPEN_ID | ou_629ce01f4bc31de078e10fcb038dbf78 | |
 | FINANCE_CONFIRM_CHAT_ID | oc_6b2da626d80eb6284bbe9dcf895030b9 | 财务确认卡正式派送群；Frankie-only 测试不走该群 |
-| DOMESTIC_ECOM_REPORT_FOLDER_TOKEN | Vr92fqp41lmUICdEMOgcl9uCnkg | 国内电商毛利报表云盘归档文件夹 `AI国内电商毛利表` |
-| DOMESTIC_ECOM_REPORT_FOLDER_PATH | 飞书云盘 / AI国内电商毛利表 | 财务卡片和通知展示的云盘导航路径 |
+| DOMESTIC_ECOM_REPORT_FOLDER_TOKEN | YmLtfYSA2lLIqBdEr6kcxCYLnvy | 国内电商毛利报表云盘归档文件夹：`AI毛利报表总目录 / 02 国内电商 / AI国内电商毛利表` |
+| DOMESTIC_ECOM_REPORT_FOLDER_PATH | 飞书云盘 / AI毛利报表总目录 / 02 国内电商 / AI国内电商毛利表 | 财务卡片和通知展示的云盘导航路径 |
 | WEBHOOK_BEARER_TOKEN | ecom-profit-webhook-2026 | n8n 调用鉴权 |
 
 报表云盘归档规范见 `docs/profit_report_drive_archive.md`。
