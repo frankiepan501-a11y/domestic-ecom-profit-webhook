@@ -6,12 +6,11 @@ v0.2.0 关键变化:
 - v0.2 P1 仍只跑 POWKONG (parser 限制), P2 加纷岚, P3/P4/P5 加抖音/小红书/京东
 """
 import asyncio
-import hashlib
 import json
 import os
 import traceback
 from datetime import datetime
-from . import config, feishu, parsers, engine, writer, lingxing, sf_api, settlement_engine
+from . import config, cost_gap_alert, feishu, parsers, engine, writer, lingxing, sf_api, settlement_engine
 
 
 # v0.3: 全 9 店铺 (加抖音宝空 + 京东宝空, 京东 parser 重写支持费用流水按订单聚合)
@@ -27,77 +26,6 @@ V02_SHOP_WHITELIST = {
     ("京东", "京东纷岚店"),
     ("京东", "宝空店"),
 }
-
-# 成本缺口告警: 仅在财务签核口径实际产生采购成本 P0 时告警采购。
-# REPORT_SUPPRESS_NOTIFY=1 和幂等审计都会阻断重复测试消息。
-_PROC_DEPT_ROOTS = ["od-273719791eed9b0558c20e0960da991a"]  # 采购部
-_PROC_JOB_TITLES = ["采购专员"]
-
-
-async def _alert_cost_gap(month: str, gap: list, sku_meta: dict, sku_to_shops: dict):
-    """gap=财务签核口径下采购成本为0的SKU/对象。告警采购专员+Frankie。非阻塞。"""
-    if not gap:
-        return
-    if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
-        print("  ⏭ 成本缺口告警已抑制 (REPORT_SUPPRESS_NOTIFY)")
-        return
-
-    gap = sorted({str(x) for x in gap if str(x).strip()})
-    idem = "domestic_profit_cost_gap_alert:" + hashlib.sha1(
-        f"{month}:{'|'.join(gap)}".encode("utf-8")
-    ).hexdigest()[:32]
-    try:
-        from . import ledger
-        if await ledger.audit_exists(idem):
-            print("  ⏭ 成本缺口告警已发送过，跳过重复通知")
-            return
-    except Exception as e:
-        print(f"  ⚠️ 成本缺口告警幂等检查失败，继续尝试发送: {e}")
-
-    lines = [
-        f"🟠 [FIN·P1] 国内电商毛利报表 · {month} 采购成本缺口告警",
-        f"以下 {len(gap)} 个 SKU/对象在财务签核口径下采购成本为 0，会影响毛利，请维护产品采购成本台或领星 cg_price 后重跑：",
-    ]
-    for sku in gap[:25]:
-        meta = sku_meta.get(sku) or {}
-        name = meta.get("name", "")
-        shops = sku_to_shops.get(sku, set())
-        shop_str = "/".join(f"{p}{s}" for p, s in list(shops)[:3])
-        source = meta.get("source", "")
-        tag = f"({source})" if source else "(采购成本=0)"
-        lines.append(f"• {sku} {name} {tag} [{shop_str}]")
-    lines.append("补完后通过卡片提交初检或重跑月度汇总；测试重跑不会重复弹此消息。")
-    msg = "\n".join(lines)
-    recips: dict = {}
-    try:
-        recips.update(await feishu.resolve_users_jt_fallback(_PROC_DEPT_ROOTS, _PROC_JOB_TITLES))
-    except Exception:
-        pass
-    recips.setdefault(config.FRANKIE_OPEN_ID, "潘志聪")
-    sent = 0
-    for oid in recips:
-        try:
-            await feishu.send_text(oid, msg)
-            sent += 1
-        except Exception:
-            pass
-    try:
-        from . import ledger
-        await ledger.write_audit(
-            idem,
-            "cost_gap_alert",
-            "system",
-            ledger.run_id_for_month(month),
-            "cost_gap",
-            idem,
-            {},
-            {"gap": gap, "sent": sent},
-            {"month": month, "gap": gap},
-            "sent" if sent else "no_recipient",
-        )
-    except Exception as e:
-        print(f"  ⚠️ 成本缺口告警审计写入失败: {e}")
-
 
 async def update_status(record_id: str, fields: dict):
     return await feishu.bitable_update_record(
@@ -473,16 +401,33 @@ async def run_profit(record_id: str) -> dict:
                                 raw["ads"], raw["logistics"], sku_costs, sku_names,
                                 year_month=year_month)
         settlement = settlement_engine.compute(raw, cost_map, year_month)
-        settlement_cost_gap = sorted({
-            str(g[5]) for g in settlement.get("gap_rows", [])
-            if len(g) >= 7 and g[0] == "P0" and g[4] == "采购成本" and str(g[5]).strip()
-        })
-        if settlement_cost_gap:
-            print(f"  ⚠️ 财务签核口径采购成本 P0 {len(settlement_cost_gap)} 个 → 告警采购")
-            try:
-                await _alert_cost_gap(year_month, settlement_cost_gap, sku_meta, sku_to_shops)
-            except Exception as e:
-                print(f"  成本缺口告警失败: {e}")
+        settlement_cost_gap_count = sum(
+            1 for g in settlement.get("gap_rows", [])
+            if len(g) >= 7
+            and g[0] == "P0"
+            and g[4] in ("采购成本", "订单明细匹配")
+            and str(g[5]).strip()
+        )
+        if settlement_cost_gap_count:
+            print(f"  ⚠️ 财务签核口径成本/订单资料 P0 {settlement_cost_gap_count} 个 → 按责任分流")
+            if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
+                print("  ⏭ 成本缺口分流卡已抑制 (REPORT_SUPPRESS_NOTIFY)")
+            else:
+                try:
+                    alert_result = await cost_gap_alert.send_settlement_cost_gap_alerts(
+                        year_month,
+                        settlement,
+                        raw,
+                        frankie_only=config.COST_GAP_ALERT_FRANKIE_ONLY,
+                    )
+                    print(
+                        "  ✓ 成本缺口分流卡: "
+                        f"运营 {len(alert_result['operations'])} / "
+                        f"采购 {len(alert_result['procurement'])} / "
+                        f"待财务判断 {len(alert_result['finance_review'])}"
+                    )
+                except Exception as e:
+                    print(f"  成本缺口分流卡失败: {e}")
         else:
             raw_zero_cost = [
                 s for s in raw["sku_set"]

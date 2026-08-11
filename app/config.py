@@ -16,6 +16,10 @@ TASK_TABLE_ID = os.getenv("TASK_TABLE_ID", "tblMYHXRHZ0GaqMh")
 # 产品采购成本台：毛利报表成本单一优先源
 COST_APP_TOKEN = os.getenv("COST_APP_TOKEN", "P9awbhG9faFstxsO1KZc9b9Qnxb")
 COST_TABLE_ID = os.getenv("COST_TABLE_ID", "tblNFHqKiob49GNf")
+COST_TABLE_URL = os.getenv(
+    "COST_TABLE_URL",
+    f"https://u1wpma3xuhr.feishu.cn/base/{COST_APP_TOKEN}?table={COST_TABLE_ID}",
+)
 
 # 国内电商毛利报表卡片化 ledger (Base 只做系统账本, 人不再手动改任务台状态)
 LEDGER_APP_TOKEN = os.getenv("LEDGER_APP_TOKEN", TASK_APP_TOKEN)
@@ -28,6 +32,10 @@ CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "
 CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lower() == "true"
 # 运营资料提交卡/缺口卡使用独立测试开关，避免财务卡测试配置把运营卡误发到 Frankie 私聊。
 OPS_CARD_FRANKIE_ONLY = os.getenv("OPS_CARD_FRANKIE_ONLY", "false").lower() == "true"
+# 新成本缺口分流卡的独立上线闸。默认只发 Frankie；确认样卡后生产环境显式设为 false。
+COST_GAP_ALERT_FRANKIE_ONLY = os.getenv(
+    "COST_GAP_ALERT_FRANKIE_ONLY", "true"
+).lower() == "true"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
 # ===== 毛利报表云盘归档 =====

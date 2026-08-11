@@ -1,7 +1,9 @@
 """Feishu interactive cards for the domestic e-commerce profit workflow."""
 from __future__ import annotations
 
+import calendar
 import hashlib
+from datetime import datetime
 import time
 from typing import Any
 
@@ -131,6 +133,156 @@ def _archive_link() -> str:
     if config.DOMESTIC_ECOM_REPORT_FOLDER_URL:
         return f"[{config.DOMESTIC_ECOM_REPORT_FOLDER_PATH}]({config.DOMESTIC_ECOM_REPORT_FOLDER_URL})"
     return config.DOMESTIC_ECOM_REPORT_FOLDER_PATH or "云盘固定目录未配置"
+
+
+def _order_export_range(period: str, entries: list[dict[str, Any]]) -> str:
+    dates = []
+    for entry in entries:
+        text = str(entry.get("order_time") or "").strip()[:10]
+        try:
+            dates.append(datetime.strptime(text, "%Y-%m-%d"))
+        except ValueError:
+            continue
+    period_index: int | None = None
+    try:
+        year, month = (int(x) for x in period.split("-", 1))
+        end = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+        period_index = year * 12 + month - 1
+    except (TypeError, ValueError):
+        end = f"{period} 月末" if period else "结算月月末"
+    if not dates:
+        if period_index is not None:
+            start_year, start_month_index = divmod(period_index - 3, 12)
+            return f"{start_year:04d}-{start_month_index + 1:02d}-01—{end}"
+        return f"结算月前3个月月初—{end}"
+    earliest = min(dates)
+    start = f"{earliest.year:04d}-{earliest.month:02d}-01"
+    return f"{start}—{end}"
+
+
+def cost_gap_alert_card(period: str, route: str, entries: list[dict[str, Any]], *,
+                        mention_open_ids: list[str] | None = None,
+                        action_url: str = "",
+                        all_entries: list[dict[str, Any]] | None = None,
+                        page_index: int = 1,
+                        page_count: int = 1) -> dict:
+    """Build an actionable cost-gap card without mixing order ids and ERP SKUs."""
+    entries = entries[:25]
+    all_entries = all_entries or entries
+    page_label = f"共 {len(all_entries)} 条"
+    if page_count > 1:
+        page_label += f"；第 {page_index}/{page_count} 张"
+    elements: list[dict] = []
+    owner_mention = _owner_mention(mention_open_ids)
+    if owner_mention:
+        elements.append(owner_mention)
+    platforms = sorted({str(x.get("platform") or "") for x in entries if x.get("platform")})
+    shops = sorted({str(x.get("shop") or "") for x in entries if x.get("shop")})
+    if route == "operations":
+        export_range = _order_export_range(period, all_entries)
+        title = f"🟠 [FIN·P1] 国内电商订单资料缺口 · {period}"
+        conclusion = "国内运营先处理，采购暂不处理"
+        details = []
+        for item in entries:
+            platform = str(item.get("platform") or "-")
+            shop = str(item.get("shop") or "-")
+            order_id = str(item.get("order_id") or item.get("object") or "-")
+            name = _short(str(item.get("name") or "商品名未取得"), 80)
+            order_time = str(item.get("order_time") or "-")
+            settled_time = str(item.get("settled_time") or "-")
+            problem = _short(str(item.get("problem") or "订单明细未能映射 ERP SKU"), 100)
+            impact = _short(str(item.get("impact") or "无法计算采购成本与毛利"), 100)
+            details.append(
+                f"- **{platform}/{shop}｜订单号 {order_id}**｜{name}\n"
+                f"  下单：{order_time}；结算/收货：{settled_time}\n"
+                f"  原因：{problem}；影响：{impact}"
+            )
+        elements.extend([
+            _fields([
+                ("责任判断", conclusion),
+                ("涉及范围", f"{'、'.join(platforms) or '-'} / {'、'.join(shops) or '-'}"),
+                ("对象类型", "订单号（不是 ERP SKU）"),
+                ("需补导范围", export_range),
+                ("缺口数量", page_label),
+            ]),
+            _md("**缺口明细**\n" + ("\n".join(details) or "- 无明细")),
+            _md(
+                "**运营处理步骤**\n"
+                f"1. 重新导出 `{export_range}` 的对应店铺订单明细。\n"
+                "2. 保留 `子订单编号`、`商家编码/外部系统编号`、`物流单号`。\n"
+                "3. 确认上述订单都在文件内，上传后提交初检。\n"
+                "4. 补导后若已识别 ERP SKU 但成本仍为 0，系统才转采购处理。\n"
+                "5. 卡内下单日期为 `-` 时，导出范围按结算月向前保守回溯 3 个月。"
+            ),
+        ])
+        if action_url:
+            elements.append({"tag": "action", "actions": [_url_button("打开资料上传页", action_url)]})
+        elements.append(_note("本卡按责任自动分流；订单资料问题不会再误派给采购。"))
+        return _base_card(title, "orange", elements)
+    if route == "procurement":
+        title = f"🟠 [FIN·P1] 国内电商采购成本缺口 · {period}"
+        details = []
+        for item in entries:
+            platform = str(item.get("platform") or "-")
+            shop = str(item.get("shop") or "-")
+            erp_sku = str(item.get("erp_sku") or item.get("object") or "-")
+            name = _short(str(item.get("name") or "品名未取得"), 80)
+            source = str(item.get("cost_source") or "成本缺失/为0")
+            order_id = str(item.get("order_id") or "-")
+            details.append(
+                f"- **{platform}/{shop}｜ERP SKU {erp_sku}**｜{name}\n"
+                f"  关联订单：{order_id}；当前成本来源：{source}"
+            )
+        elements.extend([
+            _fields([
+                ("责任判断", "ERP SKU 已识别，采购维护成本"),
+                ("涉及范围", f"{'、'.join(platforms) or '-'} / {'、'.join(shops) or '-'}"),
+                ("对象类型", "ERP SKU"),
+                ("缺口数量", page_label),
+            ]),
+            _md("**成本缺口明细**\n" + ("\n".join(details) or "- 无明细")),
+            _md(
+                "**采购处理步骤**\n"
+                "1. 按 ERP SKU 检查产品采购成本台的 `采购成本(财务核算)` 与 `采购成本(ERP)`。\n"
+                "2. 如成本台为空，再核对领星 `cg_price`。\n"
+                "3. 补齐成本后通知系统重跑；不要修改平台订单或商品链接。"
+            ),
+        ])
+        if action_url:
+            elements.append({"tag": "action", "actions": [_url_button("打开产品采购成本台", action_url)]})
+        elements.append(_note("只有 ERP SKU 已识别但成本仍为 0 的记录会发给采购。"))
+        return _base_card(title, "orange", elements)
+    if route == "finance_review":
+        title = f"🟠 [FIN·P1] 国内电商成本缺口待判断 · {period}"
+        details = []
+        for item in entries:
+            platform = str(item.get("platform") or "-")
+            shop = str(item.get("shop") or "-")
+            obj = str(item.get("object") or "-")
+            problem = _short(str(item.get("problem") or "责任暂无法判断"), 100)
+            impact = _short(str(item.get("impact") or "毛利暂不可确认"), 100)
+            action = _short(str(item.get("action") or "由财务/系统核对"), 100)
+            details.append(
+                f"- **{platform}/{shop}｜待判断对象 {obj}**\n"
+                f"  问题：{problem}；影响：{impact}；建议：{action}"
+            )
+        elements.extend([
+            _fields([
+                ("责任判断", "系统无法确定责任，暂不派给运营或采购"),
+                ("涉及范围", f"{'、'.join(platforms) or '-'} / {'、'.join(shops) or '-'}"),
+                ("对象类型", "待判断对象"),
+                ("缺口数量", page_label),
+            ]),
+            _md("**待核对明细**\n" + ("\n".join(details) or "- 无明细")),
+            _md(
+                "**下一步**\n"
+                "1. 先核对缺口对象到底是订单号、ERP SKU，还是费用口径问题。\n"
+                "2. 责任确认后再转给对应岗位，避免运营与采购来回确认。"
+            ),
+            _note("本卡只发给 Frankie，业务责任未确认前不通知运营或采购。"),
+        ])
+        return _base_card(title, "orange", elements)
+    raise ValueError(f"unsupported cost gap route: {route}")
 
 
 def _fields(items: list[tuple[str, str]], *, short: bool = True) -> dict:
