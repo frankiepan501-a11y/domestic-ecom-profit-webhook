@@ -26,6 +26,8 @@ LEDGER_OUTPUT_TABLE_ID = os.getenv("LEDGER_OUTPUT_TABLE_ID", "tblnMy4Jb8jK7JQz")
 LEDGER_AUDIT_TABLE_ID = os.getenv("LEDGER_AUDIT_TABLE_ID", "tblVggmv7oeMBMaj")
 CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "true"
 CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lower() == "true"
+# 运营资料提交卡/缺口卡使用独立测试开关，避免财务卡测试配置把运营卡误发到 Frankie 私聊。
+OPS_CARD_FRANKIE_ONLY = os.getenv("OPS_CARD_FRANKIE_ONLY", "false").lower() == "true"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 
 # ===== 毛利报表云盘归档 =====
@@ -132,12 +134,21 @@ REPORT_NOTIFY_EXTRA_USERS = [
 ]
 # 月初上传提醒: 运营职务(收操作指引) / 财务职务(收监督提醒)
 REMIND_OPS_JOB_TITLES = ["国内平台运营专员"]
+OPS_CARD_MENTION_JOB_TITLES = ["国内平台运营专员", "国内电商运营专员"]
 REMIND_FINANCE_JOB_TITLES = ["财务助理", "财务部主管"]
 # 兜底部门 (职务一个都没命中时, 按各自对应部门全员补人, 不能串)
 REMIND_OPS_DEPT_ROOTS = ["od-2e75af50a81b16d829e8b345f9137a49"]      # 国内电商平台部
 REMIND_FINANCE_DEPT_ROOTS = ["od-ad59abe171a6b0a419a5e3969fb349ad"]  # 财务部
 REMIND_DEADLINE_DAY = "8 号"  # 财务督促国内电商部完成的期限
 TASK_PANEL_URL = "https://u1wpma3xuhr.feishu.cn/base/IKyGb1jydaZW7msBzAicViiWngg"
+
+# 运营资料提交卡/缺口卡生产路由: 一张卡发群里，并在卡内 @ 当前岗位负责人。
+# OPS_CARD_FRANKIE_ONLY=true 或显式 frankie_only=true 时仍只发 Frankie 私聊。
+OPS_CARD_CHAT_ID = os.getenv(
+    "OPS_CARD_CHAT_ID",
+    "oc_3240df569ced84c1541b6f7cd217d88f",
+)
+OPS_CARD_CHAT_NAME = os.getenv("OPS_CARD_CHAT_NAME", "国内电商平台沟通群")
 
 # 财务确认卡生产路由: 一个平台一张卡发到财务群, 不按财务人员逐个私聊。
 # Frankie-only 测试仍走 Frankie 私聊, 用于上线前验证 callback/PATCH/idempotency。

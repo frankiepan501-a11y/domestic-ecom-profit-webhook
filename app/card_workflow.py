@@ -324,6 +324,31 @@ async def _ops_union_targets(frankie_only: bool = False) -> dict[str, str]:
     return targets
 
 
+async def _ops_group_mentions() -> dict[str, str]:
+    """严格按当前职务找人，并映射成发卡 App namespace 的 open_id。"""
+    if not config.OPS_CARD_CHAT_ID:
+        raise RuntimeError("OPS_CARD_CHAT_ID is required for production operation cards")
+    users = await feishu.resolve_users_by_job_title(
+        config.REMIND_OPS_DEPT_ROOTS,
+        config.OPS_CARD_MENTION_JOB_TITLES,
+    )
+    if not users:
+        raise RuntimeError("未找到当前国内电商运营岗位人员，已停止群发，避免误 @ 整个部门")
+    group_union_ids = await feishu.chat_member_union_ids(config.OPS_CARD_CHAT_ID, use_event_app=True)
+    mentions: dict[str, str] = {}
+    for app1_open_id, name in users.items():
+        union_id = await feishu.open_id_to_union_id(app1_open_id)
+        if not union_id or union_id not in group_union_ids:
+            continue
+        event_user = await feishu.contact_user_get_by_union_id(union_id, use_event_app=True)
+        event_open_id = str(event_user.get("open_id") or "")
+        if event_open_id:
+            mentions[event_open_id] = str(event_user.get("name") or name or app1_open_id)
+    if not mentions:
+        raise RuntimeError("当前国内电商运营岗位人员不在目标群或身份映射失败，已停止群发")
+    return mentions
+
+
 async def _finance_union_targets(frankie_only: bool = False) -> dict[str, str]:
     if frankie_only:
         return {config.FRANKIE_UNION_ID: "潘志聪"}
@@ -343,6 +368,23 @@ async def _send_card_to_union_targets(card: dict, targets: dict[str, str]) -> li
         if mid:
             sent.append(mid)
     return sent
+
+
+async def _send_ops_card(card: dict, *, frankie_only: bool = False) -> tuple[list[str], list[str], str]:
+    if frankie_only:
+        targets = await _ops_union_targets(frankie_only=True)
+        sent = await _send_card_to_union_targets(card, targets)
+        return sent, list(targets.values()), "private"
+    if not config.OPS_CARD_CHAT_ID:
+        raise RuntimeError("OPS_CARD_CHAT_ID is required for production operation cards")
+    res = await feishu.send_interactive_chat(config.OPS_CARD_CHAT_ID, card, use_event_app=True)
+    mid = (res.get("data") or {}).get("message_id")
+    if not mid:
+        raise RuntimeError(
+            "operation group card send failed: "
+            f"code={res.get('code')} msg={res.get('msg')}"
+        )
+    return [mid], [config.OPS_CARD_CHAT_NAME], "group"
 
 
 async def _send_finance_confirm_card(card: dict, *, frankie_only: bool = False) -> tuple[list[str], list[str], str]:
@@ -373,11 +415,12 @@ async def send_monthly_intake(year_month: str | None = None, *, force: bool = Fa
     run = await ledger.ensure_run(year_month, legacy_summary)
     run_id = _ftext(run.get("fields", {}).get("run_id")) or ledger.run_id_for_month(year_month)
     checklist = await _ensure_manifests(run_id, year_month, rows)
-    card = cards.operation_submit_card(run_id, year_month, checklist)
     if dry_run:
+        card = cards.operation_submit_card(run_id, year_month, checklist)
         return {"dry_run": True, "run_id": run_id, "card": card, "checklist_count": len(checklist)}
-    targets = await _ops_union_targets(frankie_only=frankie_only)
-    sent = await _send_card_to_union_targets(card, targets)
+    mentions = {} if frankie_only else await _ops_group_mentions()
+    card = cards.operation_submit_card(run_id, year_month, checklist, list(mentions))
+    sent, targets, route = await _send_ops_card(card, frankie_only=frankie_only)
     for mid in sent:
         await ledger.append_message_id(run_id, mid)
     await ledger.update_run(run_id, "待运营提交", "send_operation_submit_card",
@@ -390,11 +433,18 @@ async def send_monthly_intake(year_month: str | None = None, *, force: bool = Fa
         "run",
         run_id,
         {},
-        {"message_ids": sent, "target_count": len(targets)},
-        {"force": force, "frankie_only": frankie_only},
+        {"message_ids": sent, "target_count": len(targets), "route": route},
+        {"force": force, "frankie_only": frankie_only, "mentions": list(mentions.values())},
         "sent",
     )
-    return {"run_id": run_id, "year_month": year_month, "sent": sent, "targets": list(targets.values())}
+    return {
+        "run_id": run_id,
+        "year_month": year_month,
+        "sent": sent,
+        "targets": targets,
+        "route": route,
+        "mentions": list(mentions.values()),
+    }
 
 
 async def send_sample_cards(year_month: str | None = None, *, send: bool = False) -> dict:
@@ -489,21 +539,29 @@ async def _create_missing_gaps(run_id: str, period: str) -> list[dict]:
     return created
 
 
-async def send_open_gap_cards(run_id: str, *, frankie_only: bool = False) -> list[str]:
+async def send_open_gap_cards(run_id: str, *, frankie_only: bool = False,
+                              force_resend: bool = False) -> list[str]:
     gaps = await ledger.open_p0_gaps(run_id)
     if not gaps:
         return []
-    targets = await _ops_union_targets(frankie_only=frankie_only)
-    sent: list[str] = []
+    pending: list[tuple[dict, list[str]]] = []
     for gap in gaps:
         gf = gap.get("fields", {})
-        if _ftext(gf.get("message_id")):
-            continue
-        card = cards.p0_gap_card(gap)
-        mids = await _send_card_to_union_targets(card, targets)
+        existing_message_ids = [x.strip() for x in _ftext(gf.get("message_id")).split(",") if x.strip()]
+        if not existing_message_ids or force_resend:
+            pending.append((gap, existing_message_ids))
+    if not pending:
+        return []
+    mentions = {} if frankie_only else await _ops_group_mentions()
+    sent: list[str] = []
+    for gap, existing_message_ids in pending:
+        gf = gap.get("fields", {})
+        card = cards.p0_gap_card(gap, list(mentions))
+        mids, _, _ = await _send_ops_card(card, frankie_only=frankie_only)
         if mids:
             gid = _ftext(gf.get("gap_id"))
-            await ledger.mark_gap(gid, {"message_id": ",".join(mids)})
+            combined = list(dict.fromkeys(existing_message_ids + mids))
+            await ledger.mark_gap(gid, {"message_id": ",".join(combined)})
             sent.extend(mids)
     return sent
 
@@ -570,7 +628,7 @@ async def initial_gate_and_maybe_run(run_id: str, period: str) -> dict:
     if open_gaps:
         await ledger.update_run(run_id, "P0待补件", "initial_gate",
                                 f"仍有 {len(open_gaps)} 个 P0 缺口待处理")
-        sent = await send_open_gap_cards(run_id, frankie_only=config.CARD_WORKFLOW_FRANKIE_ONLY)
+        sent = await send_open_gap_cards(run_id, frankie_only=config.OPS_CARD_FRANKIE_ONLY)
         return {"ready": False, "open_p0": len(open_gaps), "gap_cards": sent}
     await start_trial_run(run_id)
     return {"ready": True, "trial_started": True}

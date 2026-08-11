@@ -66,6 +66,14 @@ def _base_card(title: str, template: str, elements: list[dict]) -> dict:
     }
 
 
+def _owner_mention(mention_open_ids: list[str] | None) -> dict | None:
+    ids = list(dict.fromkeys(str(x).strip() for x in (mention_open_ids or []) if str(x).strip()))
+    if not ids:
+        return None
+    mentions = " ".join(f"<at id={open_id}></at>" for open_id in ids)
+    return _md(f"**负责人提醒**：{mentions} 请及时跟进本卡事项。")
+
+
 def _short(text: str, limit: int = 360) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -180,12 +188,17 @@ def _store_line(row: dict) -> str:
     )
 
 
-def operation_submit_card(run_id: str, period: str, checklist: list[str]) -> dict:
+def operation_submit_card(run_id: str, period: str, checklist: list[str],
+                          mention_open_ids: list[str] | None = None) -> dict:
     cid = ledger.card_id("ops_submit", run_id)
     nonce = str(int(time.time() * 1000))
     upload_url = f"{config.PUBLIC_BASE_URL}/upload?run_id={run_id}&token={ledger.upload_token(run_id, 'run')}"
     lines = "\n".join(f"- {item}" for item in checklist[:18]) or "- 按资料清单附件台提交本月资料"
-    elements = [
+    elements = []
+    owner_mention = _owner_mention(mention_open_ids)
+    if owner_mention:
+        elements.append(owner_mention)
+    elements.extend([
         _md(
             f"**主体**：国内电商\n"
             f"**期间**：{period}\n"
@@ -211,11 +224,11 @@ def operation_submit_card(run_id: str, period: str, checklist: list[str]) -> dic
             ],
         },
         _note(f"run_id={run_id}；无广告/无结算改为上传页逐店铺确认，避免全局误点。"),
-    ]
+    ])
     return _base_card(f"🟡 [FIN·P2] 国内电商毛利报表资料提交 · {period}", "blue", elements)
 
 
-def p0_gap_card(gap: dict) -> dict:
+def p0_gap_card(gap: dict, mention_open_ids: list[str] | None = None) -> dict:
     f = gap.get("fields", {})
     run_id = ledger.extract_text(f.get("run_id"))
     gap_id = ledger.extract_text(f.get("gap_id"))
@@ -225,7 +238,11 @@ def p0_gap_card(gap: dict) -> dict:
     evidence = ledger.extract_text(f.get("证据"))
     cid = ledger.card_id("p0_gap", run_id, gap_id)
     nonce = str(int(time.time() * 1000))
-    elements = [
+    elements = []
+    owner_mention = _owner_mention(mention_open_ids)
+    if owner_mention:
+        elements.append(owner_mention)
+    elements.extend([
         _md(
             f"**gap_id**：{gap_id}\n"
             f"**平台**：{platform or '全平台'}\n"
@@ -252,7 +269,7 @@ def p0_gap_card(gap: dict) -> dict:
             ],
         },
         _note("处理后原卡会变为已处理态；重复点击不会重复写表或重复触发计算。"),
-    ]
+    ])
     return _base_card(f"🔴 [FIN·P0] 国内电商资料缺口 · {gap_type}", "red", elements)
 
 

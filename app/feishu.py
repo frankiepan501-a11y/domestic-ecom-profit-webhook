@@ -261,6 +261,19 @@ async def contact_user_get(open_id: str) -> dict:
     return (r.get("data") or {}).get("user") or {}
 
 
+async def contact_user_get_by_union_id(union_id: str, *, use_event_app: bool = False) -> dict:
+    """按 union_id 读取用户；用于把跨 App 的同一员工映射到当前发卡 App open_id。"""
+    r = await _req(
+        "GET",
+        f"/open-apis/contact/v3/users/{union_id}",
+        params={"user_id_type": "union_id"},
+        use_event_app=use_event_app,
+    )
+    if r.get("code") not in (None, 0):
+        raise RuntimeError(f"contact union_id lookup failed: code={r.get('code')} msg={r.get('msg')}")
+    return (r.get("data") or {}).get("user") or {}
+
+
 async def open_id_to_union_id(open_id: str) -> str:
     if not open_id:
         return ""
@@ -294,6 +307,33 @@ async def resolve_users_jt_fallback(dept_roots: list[str], job_titles: list[str]
 
 
 # ===== IM =====
+async def chat_member_union_ids(chat_id: str, *, use_event_app: bool = True) -> set[str]:
+    """返回群内员工 union_id；分页读取，供发卡前校验 @ 对象确实在目标群。"""
+    out: set[str] = set()
+    page_token = None
+    while True:
+        params: dict[str, Any] = {"member_id_type": "union_id", "page_size": 100}
+        if page_token:
+            params["page_token"] = page_token
+        r = await _req(
+            "GET",
+            f"/open-apis/im/v1/chats/{chat_id}/members",
+            params=params,
+            use_event_app=use_event_app,
+        )
+        if r.get("code") not in (None, 0):
+            raise RuntimeError(f"chat members lookup failed: code={r.get('code')} msg={r.get('msg')}")
+        data = r.get("data") or {}
+        out.update(
+            str(item.get("member_id"))
+            for item in (data.get("items") or [])
+            if item.get("member_id")
+        )
+        if not data.get("has_more"):
+            return out
+        page_token = data.get("page_token")
+
+
 async def send_text(open_id: str, text: str) -> dict:
     body = {"receive_id": open_id, "msg_type": "text",
             "content": json.dumps({"text": text}, ensure_ascii=False)}

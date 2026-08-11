@@ -42,15 +42,17 @@ Ledger Base：`IKyGb1jydaZW7msBzAicViiWngg`
 生产开关：
 
 - `CARD_WORKFLOW_ENABLED=true`
-- `CARD_WORKFLOW_FRANKIE_ONLY=true` 测试期只发 Frankie；Frankie 确认卡片流程后才改为 `false` 派给运营/财务。
+- `OPS_CARD_FRANKIE_ONLY=false`：资料提交卡和 P0 缺口卡走国内电商群生产路由；临时改为 `true` 时只发 Frankie 测试私聊。
+- `CARD_WORKFLOW_FRANKIE_ONLY` 继续约束财务确认/退回等旧测试链路，不再控制运营资料提交卡和缺口卡，避免全局测试开关误伤运营派送。
 - `FEISHU_EVENT_APP_ID` / `FEISHU_EVENT_APP_SECRET` 用于 App3 发卡和 PATCH。
+- `OPS_CARD_CHAT_ID=oc_3240df569ced84c1541b6f7cd217d88f`：资料提交卡和缺口卡生产路由。每张卡只发一次到「国内电商平台沟通群」，卡内实时 @ 当前职务为“国内平台运营专员/国内电商运营专员”的在职同事。
 - `FINANCE_CONFIRM_CHAT_ID=oc_6b2da626d80eb6284bbe9dcf895030b9`：财务确认卡生产路由。正式 `frankie_only=false` 时，国内电商月度毛利确认卡按平台各发一张到「财务部工作交流群」，不再按财务成员逐个私聊；`frankie_only=true` 测试仍只发 Frankie 私聊。
 
 ## 测试纪律
 
 卡片工作流上线或改派送对象时，先进入 Frankie-only 测试模式。禁止在 Frankie 完整走通“收到卡片 -> 上传/点击 -> callback 写 ledger -> 原卡 PATCH”的链路前，把 `/tasks/remind-monthly` 或等价生产入口直接发给运营负责人。
 
-如果需要验证运营卡样式，使用 `/cards/test?send=true` 或 `/cards/test-samples?send=true` 发给 Frankie；不要用 `/tasks/remind-monthly?force=true` 直接打运营，除非 `CARD_WORKFLOW_FRANKIE_ONLY=true` 已生效。
+如果需要验证运营卡样式，使用 `/cards/test?send=true` 或 `/cards/test-samples?send=true` 发给 Frankie；不要用 `/tasks/remind-monthly?force=true` 直接打运营，除非 `OPS_CARD_FRANKIE_ONLY=true` 已生效。
 
 ## Callback 路由
 
@@ -73,7 +75,7 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - 本期暂缓平台：2026-06 P0 增加 `defer_platform_scope` 上传页动作，当前仅允许淘宝/拼多多。用于“平台毛利口径未统一，本期暂缓纳入四平台试算，后续补充”的范围裁决；不会伪装成“无结算”，而是把该平台资料项标为 `已关闭`，写入 P1 `平台口径暂缓` 例外并关闭该平台 P0 缺口。
 - 初检缺口自愈：提交初检时会先按已闭环的资料项自动关闭历史 P0 缺口，避免“先生成缺口、后上传附件”后仍被旧缺口阻断试算。
 - 物流暂缺说明：只记录 `物流账单缺失` gap 和 manifest `待补充`，不会放行 P0 gate。
-- 提交初检：上传页顶部 `提交初检` 调 `initial_gate_and_maybe_run`。有 P0 缺口则按 Frankie-only 测试链路发缺口卡；无缺口则进入试算。
+- 提交初检：上传页顶部 `提交初检` 调 `initial_gate_and_maybe_run`。有 P0 缺口则向「国内电商平台沟通群」发缺口卡并 @ 当前运营负责人；无缺口则进入试算。仅 `OPS_CARD_FRANKIE_ONLY=true` 时改发 Frankie 测试私聊。
 
 ## 验证记录
 
@@ -104,6 +106,7 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - 2026-07-10 财务退回后续闭环：财务点“退回资料缺失 / 退回金额或口径异常 / 同时退回”后，callback 不再只写 ledger 状态，会自动发送后续处理卡。资料退回卡指向上传页并要求补结算单、广告证明、物流账单、成本资料或无数据证明；口径退回卡要求修正销售额、退款、平台费、广告费、采购成本、物流费、其他费用归类或补充业务原因；组合退回同时要求补资料和修正口径。后续卡按钮会 PATCH 原卡并触发重新初检/重新试算，完成后重新发送平台财务确认卡。测试期仍受 `CARD_WORKFLOW_FRANKIE_ONLY=true` 约束，只发 Frankie。
 - 2026-07-10 生产派送路由更新：Frankie 授权正式派送后，曾执行过一次 `frankie_only=false` 并按财务成员逐个私聊发卡；用户随后明确纠正“以后发去财务群就好，不需要每个人都发一张”。当前代码已切换为生产只发「财务部工作交流群」单卡，四个平台共四张群卡；已发出的个人卡不再作为后续路由模板。
 - 2026-07-13 财务点旧个人确认卡时飞书前端弹 `code: 200341`：n8n Event Hub 已在 1ms 内 `Respond OK`，国内电商 callback 后台也返回 `ok=true` 且 `patched_original_card=true`，Base run 已写成 `已归档/四个平台毛利确认卡均已完成`。根因是卡片 action 的同步 HTTP 回包仍是普通事件格式 `{"code":0}`，飞书客户端可能不把它当作合格卡片交互响应。已将 Event Hub `Respond OK` 节点改为：当 `event_type=card.action.trigger` 时返回 `{"toast":{"type":"info","content":"已收到，系统处理中"}}`，普通消息事件仍返回 `{"code":0}`。验证：手工 POST 假 `card.action.trigger/noop_test` 到 `/webhook/feishu-event-hub` 返回 200 和 toast，不写 Base。注意：前端报错不等于后台未写，排查时先查 `审计日志台`/`输出报表台`/`报表运行台`。
+- 2026-08-11 运营卡路由修复：资料提交卡和 P0 缺口卡统一发「国内电商平台沟通群」单卡，不再按运营人员逐个私聊。先用聪哥1号按飞书人事实时职务严格查人，再用 `union_id` 映射到聪哥3号 namespace 的 `open_id`，卡内用 `<at id=...></at>` 真正 @；未命中岗位、人员不在群或跨 App 映射失败时停止发送，不以整个部门兜底。历史 2026-07 缺口卡的 Frankie 私聊 `message_id` 会在一次受控 `force_resend` 后保留并追加群卡 message_id，便于追溯且避免后续重复发送。
 
 ## 剩余风险和下一步
 
@@ -112,6 +115,7 @@ P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 A/B 已通�
 建议下一步：
 
 - P0：后续正式派送调用 `/cards/finance-confirm?year_month=2026-06&frankie_only=false` 时，只发到「财务部工作交流群」。如更换群，先更新 `FINANCE_CONFIRM_CHAT_ID` 并确认 App3 已在群内。
+- P0：资料提交卡/缺口卡固定发「国内电商平台沟通群」。如更换群，先更新 `OPS_CARD_CHAT_ID`，并确认 App3 和当前运营岗位人员都在群内。
 - P0：财务确认后自动写输出报表台、归档状态和汇总索引；保留重复点击幂等验证。
 - P0：补建国内平台季度涉税金额核对卡片工作流，季度初核对上一季度，尤其适配天猫这类按季度出涉税金额数据的平台。
 - P0：把本次“本地补件但卡片上传页未触发”的场景沉淀为运维动作：允许 Frankie/系统管理员从本地资料目录追加回填，不要求运营重新从 0 上传。

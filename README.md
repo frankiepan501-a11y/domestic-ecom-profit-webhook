@@ -30,6 +30,9 @@
 | TASK_APP_TOKEN | IKyGb1jydaZW7msBzAicViiWngg | 任务台多维表 |
 | TASK_TABLE_ID | tblMYHXRHZ0GaqMh | |
 | FRANKIE_OPEN_ID | ou_629ce01f4bc31de078e10fcb038dbf78 | |
+| OPS_CARD_CHAT_ID | oc_3240df569ced84c1541b6f7cd217d88f | 运营资料提交卡和缺口卡正式派送群；卡内实时 @ 当前国内平台运营专员 |
+| OPS_CARD_CHAT_NAME | 国内电商平台沟通群 | 审计日志和接口回执中的群名 |
+| OPS_CARD_FRANKIE_ONLY | false | `true` 时运营卡只发 Frankie 测试私聊；生产保持 `false` |
 | FINANCE_CONFIRM_CHAT_ID | oc_6b2da626d80eb6284bbe9dcf895030b9 | 财务确认卡正式派送群；Frankie-only 测试不走该群 |
 | DOMESTIC_ECOM_REPORT_FOLDER_TOKEN | YmLtfYSA2lLIqBdEr6kcxCYLnvy | 国内电商毛利报表云盘归档文件夹：`毛利报表总目录 / 02 国内电商 / 国内电商毛利表` |
 | DOMESTIC_ECOM_REPORT_FOLDER_PATH | 飞书云盘 / 毛利报表总目录 / 02 国内电商 / 国内电商毛利表 | 财务卡片和通知展示的云盘导航路径 |

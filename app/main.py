@@ -89,7 +89,7 @@ async def remind_monthly(force: bool = False, authorization: str | None = Header
         from . import card_workflow
         return await card_workflow.send_monthly_intake(
             force=force,
-            frankie_only=config.CARD_WORKFLOW_FRANKIE_ONLY,
+            frankie_only=config.OPS_CARD_FRANKIE_ONLY,
         )
     from . import reminder
     return await reminder.monthly_upload_reminder(force=force)
@@ -239,7 +239,7 @@ async def upload_submit(run_id: str = Form(...), token: str = Form(...)):
     else:
         body = (
             f"<p>资料已提交初检，当前 P0 缺口数：<b>{html_escape(str(gate.get('open_p0', 0)))}</b>。</p>"
-            "<p>系统会把 P0 缺口卡继续发到 Frankie-only 测试链路。</p>"
+            "<p>系统会把 P0 缺口卡发到国内电商平台沟通群，并 @ 当前运营负责人。</p>"
         )
     return HTMLResponse(upload_result_html("已提交初检", run_id, token, body))
 
