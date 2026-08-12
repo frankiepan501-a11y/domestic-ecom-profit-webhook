@@ -108,6 +108,7 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - 2026-07-13 财务点旧个人确认卡时飞书前端弹 `code: 200341`：n8n Event Hub 已在 1ms 内 `Respond OK`，国内电商 callback 后台也返回 `ok=true` 且 `patched_original_card=true`，Base run 已写成 `已归档/四个平台毛利确认卡均已完成`。根因是卡片 action 的同步 HTTP 回包仍是普通事件格式 `{"code":0}`，飞书客户端可能不把它当作合格卡片交互响应。已将 Event Hub `Respond OK` 节点改为：当 `event_type=card.action.trigger` 时返回 `{"toast":{"type":"info","content":"已收到，系统处理中"}}`，普通消息事件仍返回 `{"code":0}`。验证：手工 POST 假 `card.action.trigger/noop_test` 到 `/webhook/feishu-event-hub` 返回 200 和 toast，不写 Base。注意：前端报错不等于后台未写，排查时先查 `审计日志台`/`输出报表台`/`报表运行台`。
 - 2026-08-11 运营卡路由修复：资料提交卡和 P0 缺口卡统一发「国内电商平台沟通群」单卡，不再按运营人员逐个私聊。先用聪哥1号按飞书人事实时职务严格查人，再用 `union_id` 映射到聪哥3号 namespace 的 `open_id`，卡内用 `<at id=...></at>` 真正 @；未命中岗位、人员不在群或跨 App 映射失败时停止发送，不以整个部门兜底。历史 2026-07 缺口卡的 Frankie 私聊 `message_id` 会在一次受控 `force_resend` 后保留并追加群卡 message_id，便于追溯且避免后续重复发送。
 - 2026-08-11 成本缺口责任分流修复：旧 `_alert_cost_gap` 会把完整缺口行压缩成“SKU/对象”，导致订单号被误当 ERP SKU 并统一发采购。新路径保留平台、店铺、对象类型、订单号/ERP SKU、商品、问题、影响和建议动作：订单未匹配/商家编码缺失归运营群，ERP SKU 已识别但成本为 0 才归采购专员，未知类型留给系统排查。天猫交易货款会补充下单/结算时间并按最早下单月份计算订单明细导出范围。独立上线闸 `COST_GAP_ALERT_FRANKIE_ONLY` 默认 `true`；2026-07 两类 Frankie-only 样卡已发送并通过结构/回读自检，尚未 push/deploy 或切生产。
+- 2026-08-12 2026-07 初检失败根因确认：聪哥1号对固定归档目录 `YmLtfYSA2lLIqBdEr6kcxCYLnvy` 的访问返回 `1061004 forbidden`，创建表格接口的真实错误又被 `writer.create_report_spreadsheet` 直接索引 `data` 覆盖成 `KeyError: 'data'`。已由 Frankie 用户身份给应用 `cli_a9f6ae86fce8dbd8` 恢复目录 `full_access`，并验证应用重新可列目录；代码同时改为保留飞书 `code/msg`，后续权限异常会给出可执行原因，不再只显示 KeyError。
 
 ## 剩余风险和下一步
 

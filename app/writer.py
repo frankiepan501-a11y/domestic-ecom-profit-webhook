@@ -111,7 +111,15 @@ async def create_report_spreadsheet(year_month: str) -> tuple[str, dict[str, str
     title = f"国内电商毛利表-{year_month.replace('-', '/')}"
     folder_token = (config.DOMESTIC_ECOM_REPORT_FOLDER_TOKEN or "").strip() or None
     res = await feishu.sheets_create(title, folder_token=folder_token)
-    token = res["data"]["spreadsheet"]["spreadsheet_token"]
+    token = (
+        (res.get("data") or {}).get("spreadsheet", {}).get("spreadsheet_token")
+        if isinstance(res, dict)
+        else None
+    )
+    if not isinstance(res, dict) or res.get("code") != 0 or not token:
+        code = res.get("code", "missing") if isinstance(res, dict) else "invalid_response"
+        msg = res.get("msg", "响应缺少 spreadsheet_token") if isinstance(res, dict) else str(res)
+        raise RuntimeError(f"创建飞书毛利报表失败: code={code}, msg={msg}")
 
     await _grant_report_collaborators(token)
 
