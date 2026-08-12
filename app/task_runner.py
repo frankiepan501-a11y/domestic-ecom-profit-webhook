@@ -405,7 +405,7 @@ async def run_profit(record_id: str) -> dict:
             1 for g in settlement.get("gap_rows", [])
             if len(g) >= 7
             and g[0] == "P0"
-            and g[4] in ("采购成本", "订单明细匹配")
+            and g[4] in cost_gap_alert.OPERATIONS_GAP_CATEGORIES
             and str(g[5]).strip()
         )
         if settlement_cost_gap_count:

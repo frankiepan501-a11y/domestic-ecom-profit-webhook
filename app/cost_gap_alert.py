@@ -1,10 +1,10 @@
-"""Classify and notify settlement procurement-cost gaps by business owner."""
+"""Classify and notify domestic-ecommerce settlement gaps by business owner."""
 from __future__ import annotations
 
 import hashlib
 from typing import Any
 
-from . import cards, config, feishu, ledger, settlement_engine
+from . import cards, config, ledger, settlement_engine
 
 
 OPS_PROBLEM_MARKERS = (
@@ -13,26 +13,12 @@ OPS_PROBLEM_MARKERS = (
     "多个商家编码",
     "无法唯一映射采购成本",
 )
-PROCUREMENT_PROBLEM_MARKERS = (
-    "采购成本表未匹配",
-    "成本为0",
-)
-PROCUREMENT_DEPT_ROOTS = ["od-273719791eed9b0558c20e0960da991a"]
-PROCUREMENT_JOB_TITLES = ["采购专员"]
+OPERATIONS_GAP_CATEGORIES = frozenset({"资料缺口", "订单明细匹配", "采购成本", "物流成本"})
 PAGE_SIZE = 25
 
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _has_zero_unit_cost(row: list[Any]) -> bool:
-    if len(row) <= 7:
-        return False
-    try:
-        return float(row[7] or 0) <= 0
-    except (TypeError, ValueError):
-        return False
 
 
 def _cost_context(cost_rows: list[list[Any]]) -> tuple[dict[str, list[Any]], dict[str, list[list[Any]]]]:
@@ -104,7 +90,7 @@ def extract_order_context(raw: dict[str, Any]) -> dict[str, dict[str, str]]:
 def classify_settlement_cost_gaps(
     settlement: dict[str, Any], *, order_context: dict[str, dict[str, str]] | None = None
 ) -> dict[str, list[dict[str, Any]]]:
-    """Return P0 procurement-cost gaps grouped by the person who can actually fix them."""
+    """Route all actionable domestic-ecommerce P0 gaps to domestic operations."""
     classified: dict[str, list[dict[str, Any]]] = {
         "operations": [],
         "procurement": [],
@@ -118,27 +104,37 @@ def classify_settlement_cost_gaps(
             continue
         platform, shop, month = map(_text, row[1:4])
         gap_category = _text(row[4])
-        if gap_category not in {"采购成本", "订单明细匹配"}:
+        if gap_category not in OPERATIONS_GAP_CATEGORIES:
             continue
         obj, problem, impact, action = map(_text, row[5:9])
         haystack = f"{problem} {impact} {action}"
-        if gap_category == "订单明细匹配" or any(marker in haystack for marker in OPS_PROBLEM_MARKERS):
-            route = "operations"
+        route = "operations"
+        order_id = ""
+        erp_sku = ""
+        name = ""
+        source = ""
+        if gap_category == "资料缺口":
+            object_type = "店铺"
+        elif gap_category == "物流成本":
+            if any(marker in haystack for marker in ("物流单号为空", "快递单号为空", "未解析到有效运单号")):
+                object_type = "订单号"
+                order_id = obj
+            else:
+                object_type = "运单号"
+        elif gap_category == "订单明细匹配" or any(marker in haystack for marker in OPS_PROBLEM_MARKERS):
             object_type = "订单号"
             cost_row = by_order.get(obj) or []
             order_id = obj
             erp_sku = _text(cost_row[4]) if len(cost_row) > 4 else ""
             name = _text(cost_row[5]) if len(cost_row) > 5 else ""
             source = _text(cost_row[9]) if len(cost_row) > 9 else ""
-        elif any(marker in haystack for marker in PROCUREMENT_PROBLEM_MARKERS):
+        else:
             matches = [
                 cost_row for cost_row in (by_sku.get(obj.upper()) or [])
-                if _has_zero_unit_cost(cost_row)
-                and len(cost_row) >= 3
+                if len(cost_row) >= 3
                 and tuple(map(_text, cost_row[:3])) == (platform, shop, month)
             ]
             if matches:
-                route = "procurement"
                 object_type = "ERP SKU"
                 cost_row = matches[0]
                 order_id = _text(cost_row[3]) if len(cost_row) > 3 else ""
@@ -146,19 +142,7 @@ def classify_settlement_cost_gaps(
                 name = _text(cost_row[5]) if len(cost_row) > 5 else ""
                 source = _text(cost_row[9]) if len(cost_row) > 9 else ""
             else:
-                route = "finance_review"
-                object_type = "待判断对象"
-                order_id = ""
-                erp_sku = ""
-                name = ""
-                source = ""
-        else:
-            route = "finance_review"
-            object_type = "待判断对象"
-            order_id = ""
-            erp_sku = ""
-            name = ""
-            source = ""
+                object_type = "待核实对象"
         key = (route, platform, shop, obj, problem)
         if key in seen:
             continue
@@ -195,7 +179,7 @@ def _alert_key(month: str, route: str, audience: str, entries: list[dict[str, An
     digest = hashlib.sha1(
         f"{month}:{route}:{audience}:{'|'.join(facts)}".encode("utf-8")
     ).hexdigest()[:32]
-    return f"domestic_profit_cost_gap_alert_v3:{route}:{audience}:{digest}"
+    return f"domestic_profit_cost_gap_alert_v4:{route}:{audience}:{digest}"
 
 
 def _pages(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -252,7 +236,7 @@ async def send_settlement_cost_gap_alerts(
     *,
     frankie_only: bool,
 ) -> dict[str, list[str]]:
-    """Send each cost gap only to the role that can fix it."""
+    """Send domestic-ecommerce gaps to operations, the single accountable owner."""
     classified = classify_settlement_cost_gaps(
         settlement,
         order_context=extract_order_context(raw),
@@ -303,106 +287,6 @@ async def send_settlement_cost_gap_alerts(
             if mids:
                 await _record_send_without_blocking(
                     month, "operations", key, page, mids, targets, channel
-                )
-
-    procurement = classified["procurement"]
-    if procurement:
-        procurement_pages = _pages(procurement)
-        if frankie_only:
-            targets = {config.FRANKIE_OPEN_ID: "潘志聪"}
-            target_audience = "frankie_preview"
-        else:
-            try:
-                targets = await feishu.resolve_users_by_job_title(
-                    PROCUREMENT_DEPT_ROOTS,
-                    PROCUREMENT_JOB_TITLES,
-                )
-            except Exception as exc:
-                print(f"  [WARN] 采购岗位解析失败，改发 Frankie 兜底: {type(exc).__name__}")
-                targets = {}
-            if targets:
-                target_audience = "production"
-            else:
-                targets = {config.FRANKIE_OPEN_ID: "潘志聪"}
-                target_audience = "routing_fallback"
-        for page_index, page in enumerate(procurement_pages, start=1):
-            card = cards.cost_gap_alert_card(
-                month,
-                "procurement",
-                page,
-                action_url=config.COST_TABLE_URL,
-                all_entries=procurement,
-                page_index=page_index,
-                page_count=len(procurement_pages),
-            )
-            for open_id, target_name in targets.items():
-                key = _alert_key(
-                    month,
-                    "procurement",
-                    f"{target_audience}:{open_id}",
-                    page,
-                )
-                if await _already_sent_or_audit_unavailable(key, "procurement"):
-                    continue
-                try:
-                    res = await feishu.send_interactive_open_id(
-                        open_id,
-                        card,
-                        use_event_app=False,
-                    )
-                except Exception as exc:
-                    print(f"  [WARN] 采购成本缺口卡发送失败: {type(exc).__name__}")
-                    continue
-                mid = (res.get("data") or {}).get("message_id")
-                if not mid:
-                    continue
-                sent_by_route["procurement"].append(mid)
-                await _record_send_without_blocking(
-                    month,
-                    "procurement",
-                    key,
-                    page,
-                    [mid],
-                    [target_name],
-                    "private",
-                )
-
-    finance_review = classified["finance_review"]
-    if finance_review:
-        finance_pages = _pages(finance_review)
-        for page_index, page in enumerate(finance_pages, start=1):
-            key = _alert_key(month, "finance_review", audience, page)
-            if await _already_sent_or_audit_unavailable(key, "finance_review"):
-                continue
-            card = cards.cost_gap_alert_card(
-                month,
-                "finance_review",
-                page,
-                all_entries=finance_review,
-                page_index=page_index,
-                page_count=len(finance_pages),
-            )
-            try:
-                res = await feishu.send_interactive_open_id(
-                    config.FRANKIE_OPEN_ID,
-                    card,
-                    use_event_app=False,
-                )
-            except Exception as exc:
-                print(f"  [WARN] 待判断成本缺口卡发送失败: {type(exc).__name__}")
-                continue
-            mid = (res.get("data") or {}).get("message_id")
-            mids = [mid] if mid else []
-            sent_by_route["finance_review"].extend(mids)
-            if mids:
-                await _record_send_without_blocking(
-                    month,
-                    "finance_review",
-                    key,
-                    page,
-                    mids,
-                    ["潘志聪"],
-                    "private",
                 )
 
     return sent_by_route

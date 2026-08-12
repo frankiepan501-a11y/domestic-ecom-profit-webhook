@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import cards, cost_gap_alert
+from app import cards, cost_gap_alert, feishu
 
 
 class CostGapClassificationTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class CostGapClassificationTests(unittest.TestCase):
         self.assertEqual("5117032694368093324", classified["operations"][0]["order_id"])
         self.assertEqual("POWKONG PLANTDOCK 食人花底座", classified["operations"][0]["name"])
 
-    def test_known_erp_sku_with_zero_cost_routes_to_procurement(self):
+    def test_known_erp_sku_with_zero_cost_routes_to_operations(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -44,10 +44,39 @@ class CostGapClassificationTests(unittest.TestCase):
 
         classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
 
-        self.assertEqual([], classified["operations"])
-        self.assertEqual("ERP SKU", classified["procurement"][0]["object_type"])
-        self.assertEqual("FL-DOCK-001", classified["procurement"][0]["erp_sku"])
-        self.assertEqual("FUNLAB Dock", classified["procurement"][0]["name"])
+        self.assertEqual([], classified["procurement"])
+        self.assertEqual("ERP SKU", classified["operations"][0]["object_type"])
+        self.assertEqual("FL-DOCK-001", classified["operations"][0]["erp_sku"])
+        self.assertEqual("FUNLAB Dock", classified["operations"][0]["name"])
+
+    def test_logistics_and_source_file_gaps_route_to_operations(self):
+        settlement = {
+            "gap_rows": [
+                [
+                    "P0", "天猫", "天猫宝空", "2026-07", "物流成本",
+                    "SF123", "结算订单运单未在前后月账单池命中，顺丰API也未返回费用",
+                    "毛利会虚高", "补后续账单或核实运单/API权限后重跑",
+                ],
+                [
+                    "P0", "抖音", "抖音纷岚", "2026-07", "资料缺口",
+                    "抖音纷岚", "缺结算订单或订单明细文件",
+                    "无法计算结算口径毛利", "补结算订单和订单明细后重跑",
+                ],
+                [
+                    "P0", "抖音", "抖音宝空", "2026-07", "物流成本",
+                    "order-without-waybill", "结算收入订单未解析到有效运单号",
+                    "无法计算订单物流成本", "补订单明细物流单号或物流账单",
+                ],
+            ],
+            "cost_rows": [],
+        }
+
+        classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
+
+        self.assertEqual([], classified["procurement"])
+        self.assertEqual([], classified["finance_review"])
+        self.assertEqual(["运单号", "店铺", "订单号"], [x["object_type"] for x in classified["operations"]])
+        self.assertEqual(["物流成本", "资料缺口", "物流成本"], [x["gap_category"] for x in classified["operations"]])
 
     def test_same_erp_sku_across_shops_keeps_matching_shop_context(self):
         settlement = {
@@ -70,7 +99,7 @@ class CostGapClassificationTests(unittest.TestCase):
 
         classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
 
-        item = classified["procurement"][0]
+        item = classified["operations"][0]
         self.assertEqual("dy-order-001", item["order_id"])
         self.assertEqual("抖音商品", item["name"])
 
@@ -89,7 +118,7 @@ class CostGapClassificationTests(unittest.TestCase):
         self.assertEqual("order-404", classified["operations"][0]["order_id"])
         self.assertEqual([], classified["procurement"])
 
-    def test_zero_cost_wording_without_erp_sku_evidence_stays_for_review(self):
+    def test_zero_cost_wording_without_erp_sku_evidence_still_routes_to_operations(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -102,9 +131,11 @@ class CostGapClassificationTests(unittest.TestCase):
         classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
 
         self.assertEqual([], classified["procurement"])
-        self.assertEqual("order-looks-like-id", classified["finance_review"][0]["object"])
+        self.assertEqual([], classified["finance_review"])
+        self.assertEqual("order-looks-like-id", classified["operations"][0]["object"])
+        self.assertEqual("待核实对象", classified["operations"][0]["object_type"])
 
-    def test_zero_cost_wording_with_positive_unit_cost_stays_for_review(self):
+    def test_zero_cost_wording_with_positive_unit_cost_still_routes_to_operations(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -120,7 +151,8 @@ class CostGapClassificationTests(unittest.TestCase):
         classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
 
         self.assertEqual([], classified["procurement"])
-        self.assertEqual("FL-DOCK-001", classified["finance_review"][0]["object"])
+        self.assertEqual([], classified["finance_review"])
+        self.assertEqual("FL-DOCK-001", classified["operations"][0]["object"])
 
     def test_tmall_settlement_row_enriches_order_dates_for_operations(self):
         csv_text = (
@@ -199,46 +231,18 @@ class CostGapCardTests(unittest.TestCase):
         )
 
         rendered = str(card)
-        self.assertIn("国内电商订单资料缺口", rendered)
-        self.assertIn("国内运营先处理，采购暂不处理", rendered)
+        self.assertIn("国内电商毛利资料/成本缺口", rendered)
+        self.assertIn("国内电商运营统一跟进，采购不直接收卡", rendered)
         self.assertIn("天猫宝空", rendered)
         self.assertIn("订单号", rendered)
         self.assertIn("5117032694368093324", rendered)
         self.assertIn("POWKONG PLANTDOCK 食人花底座", rendered)
         self.assertIn("无法映射采购成本", rendered)
+        self.assertIn("下单：2026-05-23 16:14:12", rendered)
+        self.assertIn("结算/收货：2026-07-08 19:46:20", rendered)
         self.assertIn("2026-05-01—2026-07-31", rendered)
         self.assertIn("<at id=ou_event_zhao></at>", rendered)
         self.assertIn("打开资料上传页", rendered)
-
-    def test_procurement_card_only_contains_identified_erp_skus(self):
-        card = cards.cost_gap_alert_card(
-            "2026-07",
-            "procurement",
-            [{
-                "platform": "抖音",
-                "shop": "抖音纷岚",
-                "object_type": "ERP SKU",
-                "object": "FL-DOCK-001",
-                "erp_sku": "FL-DOCK-001",
-                "order_id": "order-001",
-                "name": "FUNLAB Dock",
-                "problem": "采购成本表未匹配或成本为0",
-                "impact": "毛利会虚高",
-                "action": "维护产品采购成本台后重跑",
-                "cost_source": "成本缺失/为0",
-            }],
-            action_url="https://u1wpma3xuhr.feishu.cn/base/P9awbhG9faFstxsO1KZc9b9Qnxb",
-        )
-
-        rendered = str(card)
-        self.assertIn("国内电商采购成本缺口", rendered)
-        self.assertIn("ERP SKU 已识别，采购维护成本", rendered)
-        self.assertIn("FL-DOCK-001", rendered)
-        self.assertIn("FUNLAB Dock", rendered)
-        self.assertIn("抖音纷岚", rendered)
-        self.assertIn("成本缺失/为0", rendered)
-        self.assertNotIn("订单号（不是 ERP SKU）", rendered)
-        self.assertIn("打开产品采购成本台", rendered)
 
     def test_operations_card_uses_all_entries_for_range_and_count(self):
         entries = [{
@@ -293,20 +297,8 @@ class CostGapCardTests(unittest.TestCase):
         )
 
         rendered = str(card)
-        self.assertIn("天猫/天猫宝空｜订单号 tm-001", rendered)
-        self.assertIn("抖音/抖音纷岚｜订单号 dy-001", rendered)
-
-    def test_procurement_card_keeps_platform_and_shop_on_each_line(self):
-        card = cards.cost_gap_alert_card(
-            "2026-07",
-            "procurement",
-            [{
-                "platform": "抖音", "shop": "抖音纷岚", "erp_sku": "FL-001",
-                "order_id": "dy-001", "name": "商品B", "cost_source": "成本缺失/为0",
-            }],
-        )
-
-        self.assertIn("抖音/抖音纷岚｜ERP SKU FL-001", str(card))
+        self.assertIn("天猫/天猫宝空｜资料/成本｜订单号 tm-001", rendered)
+        self.assertIn("抖音/抖音纷岚｜资料/成本｜订单号 dy-001", rendered)
 
     def test_missing_order_date_uses_conservative_exact_export_range(self):
         card = cards.cost_gap_alert_card(
@@ -325,6 +317,66 @@ class CostGapCardTests(unittest.TestCase):
 
 
 class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_zero_cost_logistics_and_source_gaps_send_only_to_operations_group(self):
+        settlement = {
+            "gap_rows": [
+                [
+                    "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
+                    "FL-DOCK-001", "采购成本表未匹配或成本为0",
+                    "毛利会虚高", "维护产品采购成本台后重跑",
+                ],
+                [
+                    "P0", "天猫", "天猫宝空", "2026-07", "物流成本",
+                    "SF123", "结算订单运单未在前后月账单池命中，顺丰API也未返回费用",
+                    "毛利会虚高", "补后续账单或核实运单/API权限后重跑",
+                ],
+                [
+                    "P0", "抖音", "抖音宝空", "2026-07", "资料缺口",
+                    "抖音宝空", "缺结算订单或订单明细文件",
+                    "无法计算结算口径毛利", "补结算订单和订单明细后重跑",
+                ],
+            ],
+            "cost_rows": [[
+                "抖音", "抖音纷岚", "2026-07", "order-001", "FL-DOCK-001",
+                "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
+            ]],
+        }
+        with patch(
+            "app.card_workflow._ops_group_mentions",
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
+        ) as send_ops, patch.object(
+            feishu,
+            "resolve_users_by_job_title",
+            new=AsyncMock(side_effect=AssertionError("国内毛利缺口不应再解析采购岗位")),
+        ), patch.object(
+            feishu,
+            "send_interactive_open_id",
+            new=AsyncMock(side_effect=AssertionError("国内毛利缺口不应再私聊采购或财务")),
+        ), patch.object(
+            cost_gap_alert.ledger,
+            "audit_exists",
+            new=AsyncMock(return_value=False),
+        ), patch.object(
+            cost_gap_alert.ledger,
+            "write_audit",
+            new=AsyncMock(),
+        ):
+            result = await cost_gap_alert.send_settlement_cost_gap_alerts(
+                "2026-07", settlement, {}, frankie_only=False
+            )
+
+        self.assertEqual(["om_ops"], result["operations"])
+        self.assertEqual([], result["procurement"])
+        self.assertEqual([], result["finance_review"])
+        rendered = str(send_ops.await_args.args[0])
+        self.assertIn("采购成本", rendered)
+        self.assertIn("物流成本", rendered)
+        self.assertIn("资料缺口", rendered)
+        self.assertIn("<at id=ou_event_zhao></at>", rendered)
+
     async def test_frankie_only_operations_gap_does_not_resolve_or_mention_operations(self):
         settlement = {
             "gap_rows": [[
@@ -357,7 +409,7 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(True, send_ops.await_args.kwargs["frankie_only"])
         self.assertNotIn("<at id=", str(send_ops.await_args.args[0]))
 
-    async def test_frankie_only_procurement_gap_does_not_resolve_procurement(self):
+    async def test_frankie_only_zero_cost_gap_uses_operations_preview_route(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -369,16 +421,13 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
             ]],
         }
-        response = {"code": 0, "data": {"message_id": "om_frankie"}}
-        with patch.object(
-            cost_gap_alert.feishu,
-            "resolve_users_by_job_title",
-            new=AsyncMock(side_effect=AssertionError("Frankie-only must not resolve procurement")),
-        ), patch.object(
-            cost_gap_alert.feishu,
-            "send_interactive_open_id",
-            new=AsyncMock(return_value=response),
-        ) as send_proc, patch.object(
+        with patch(
+            "app.card_workflow._ops_group_mentions",
+            new=AsyncMock(side_effect=AssertionError("Frankie-only must not resolve operations")),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_frankie"], ["潘志聪"], "private")),
+        ) as send_ops, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
             new=AsyncMock(return_value=False),
@@ -391,8 +440,9 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07", settlement, {}, frankie_only=True
             )
 
-        self.assertEqual(["om_frankie"], result["procurement"])
-        self.assertEqual(cost_gap_alert.config.FRANKIE_OPEN_ID, send_proc.await_args.args[0])
+        self.assertEqual(["om_frankie"], result["operations"])
+        self.assertEqual([], result["procurement"])
+        self.assertEqual(True, send_ops.await_args.kwargs["frankie_only"])
 
     async def test_operations_gaps_are_sent_in_pages_of_25(self):
         gap_rows = []
@@ -488,11 +538,10 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
             ]],
         }
-        with patch.object(
-            cost_gap_alert.feishu,
-            "send_interactive_open_id",
-            new=AsyncMock(return_value={"code": 230013, "msg": "not available"}),
-        ) as send_proc, patch.object(
+        with patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=([], ["潘志聪"], "private")),
+        ) as send_ops, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
             new=AsyncMock(return_value=False),
@@ -508,10 +557,50 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07", settlement, {}, frankie_only=True
             )
 
-        self.assertEqual(2, send_proc.await_count)
+        self.assertEqual(2, send_ops.await_count)
         write_audit.assert_not_awaited()
 
-    async def test_procurement_fallback_does_not_block_later_role_delivery(self):
+    async def test_zero_cost_gap_never_resolves_procurement_fallback(self):
+        settlement = {
+            "gap_rows": [[
+                "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
+                "FL-DOCK-001", "采购成本表未匹配或成本为0",
+                "毛利会虚高", "维护产品采购成本台后重跑",
+            ]],
+            "cost_rows": [[
+                "抖音", "抖音纷岚", "2026-07", "order-001", "FL-DOCK-001",
+                "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
+            ]],
+        }
+        with patch(
+            "app.card_workflow._ops_group_mentions",
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
+        ) as send_ops, patch.object(
+            feishu,
+            "resolve_users_by_job_title",
+            new=AsyncMock(side_effect=AssertionError("不应解析采购岗位")),
+        ) as resolve_proc, patch.object(
+            cost_gap_alert.ledger,
+            "audit_exists",
+            new=AsyncMock(return_value=False),
+        ), patch.object(
+            cost_gap_alert.ledger,
+            "write_audit",
+            new=AsyncMock(),
+        ):
+            result = await cost_gap_alert.send_settlement_cost_gap_alerts(
+                "2026-07", settlement, {}, frankie_only=False
+            )
+
+        self.assertEqual(["om_ops"], result["operations"])
+        self.assertEqual([], result["procurement"])
+        self.assertEqual(1, send_ops.await_count)
+        resolve_proc.assert_not_awaited()
+
+    async def test_operations_gap_is_idempotent_after_success(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -531,16 +620,13 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
         async def write_audit(key, *args, **kwargs):
             stored_keys.add(key)
 
-        response = {"code": 0, "data": {"message_id": "om_sent"}}
-        with patch.object(
-            cost_gap_alert.feishu,
-            "resolve_users_by_job_title",
-            new=AsyncMock(side_effect=[{}, {"ou_proc": "李采购"}]),
-        ), patch.object(
-            cost_gap_alert.feishu,
-            "send_interactive_open_id",
-            new=AsyncMock(return_value=response),
-        ) as send_proc, patch.object(
+        with patch(
+            "app.card_workflow._ops_group_mentions",
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
+        ) as send_ops, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
             new=AsyncMock(side_effect=audit_exists),
@@ -556,61 +642,8 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07", settlement, {}, frankie_only=False
             )
 
-        self.assertEqual(cost_gap_alert.config.FRANKIE_OPEN_ID, send_proc.await_args_list[0].args[0])
-        self.assertEqual("ou_proc", send_proc.await_args_list[1].args[0])
-        self.assertEqual(2, len(stored_keys))
-
-    async def test_procurement_retries_only_failed_recipient(self):
-        settlement = {
-            "gap_rows": [[
-                "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
-                "FL-DOCK-001", "采购成本表未匹配或成本为0",
-                "毛利会虚高", "维护产品采购成本台后重跑",
-            ]],
-            "cost_rows": [[
-                "抖音", "抖音纷岚", "2026-07", "order-001", "FL-DOCK-001",
-                "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
-            ]],
-        }
-        stored_keys = set()
-
-        async def audit_exists(key):
-            return key in stored_keys
-
-        async def write_audit(key, *args, **kwargs):
-            stored_keys.add(key)
-
-        with patch.object(
-            cost_gap_alert.feishu,
-            "resolve_users_by_job_title",
-            new=AsyncMock(return_value={"ou_proc_1": "采购甲", "ou_proc_2": "采购乙"}),
-        ), patch.object(
-            cost_gap_alert.feishu,
-            "send_interactive_open_id",
-            new=AsyncMock(side_effect=[
-                {"code": 0, "data": {"message_id": "om_1"}},
-                {"code": 230013, "msg": "not available"},
-                {"code": 0, "data": {"message_id": "om_2"}},
-            ]),
-        ) as send_proc, patch.object(
-            cost_gap_alert.ledger,
-            "audit_exists",
-            new=AsyncMock(side_effect=audit_exists),
-        ), patch.object(
-            cost_gap_alert.ledger,
-            "write_audit",
-            new=AsyncMock(side_effect=write_audit),
-        ):
-            await cost_gap_alert.send_settlement_cost_gap_alerts(
-                "2026-07", settlement, {}, frankie_only=False
-            )
-            await cost_gap_alert.send_settlement_cost_gap_alerts(
-                "2026-07", settlement, {}, frankie_only=False
-            )
-
-        sent_open_ids = [call.args[0] for call in send_proc.await_args_list]
-        self.assertEqual(["ou_proc_1", "ou_proc_2", "ou_proc_2"], sent_open_ids)
-        self.assertEqual(2, len(stored_keys))
+        self.assertEqual(1, send_ops.await_count)
+        self.assertEqual(1, len(stored_keys))
 
     async def test_route_and_recipient_exceptions_do_not_block_other_alerts(self):
         settlement = {
@@ -636,11 +669,6 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
             ]],
         }
-        responses = [
-            TimeoutError("采购甲发送超时"),
-            {"code": 0, "data": {"message_id": "om_proc_2"}},
-            {"code": 0, "data": {"message_id": "om_review"}},
-        ]
         with patch(
             "app.card_workflow._ops_group_mentions",
             new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
@@ -648,13 +676,9 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             "app.card_workflow._send_ops_card",
             new=AsyncMock(side_effect=TimeoutError("运营群发送超时")),
         ), patch.object(
-            cost_gap_alert.feishu,
-            "resolve_users_by_job_title",
-            new=AsyncMock(return_value={"ou_proc_1": "采购甲", "ou_proc_2": "采购乙"}),
-        ), patch.object(
-            cost_gap_alert.feishu,
+            feishu,
             "send_interactive_open_id",
-            new=AsyncMock(side_effect=responses),
+            new=AsyncMock(side_effect=AssertionError("不应发送采购或财务私聊")),
         ) as send_private, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
@@ -669,13 +693,10 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual([], result["operations"])
-        self.assertEqual(["om_proc_2"], result["procurement"])
-        self.assertEqual(["om_review"], result["finance_review"])
-        self.assertEqual(
-            ["ou_proc_1", "ou_proc_2", cost_gap_alert.config.FRANKIE_OPEN_ID],
-            [call.args[0] for call in send_private.await_args_list],
-        )
-        self.assertEqual(2, write_audit.await_count)
+        self.assertEqual([], result["procurement"])
+        self.assertEqual([], result["finance_review"])
+        send_private.assert_not_awaited()
+        write_audit.assert_not_awaited()
 
     async def test_audit_lookup_exception_skips_only_that_alert(self):
         settlement = {
@@ -711,16 +732,9 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             "app.card_workflow._ops_group_mentions",
             new=AsyncMock(side_effect=AssertionError("审计查询失败后不应发送该运营卡")),
         ), patch.object(
-            cost_gap_alert.feishu,
-            "resolve_users_by_job_title",
-            new=AsyncMock(return_value={"ou_proc": "李采购"}),
-        ), patch.object(
-            cost_gap_alert.feishu,
+            feishu,
             "send_interactive_open_id",
-            new=AsyncMock(side_effect=[
-                {"code": 0, "data": {"message_id": "om_proc"}},
-                {"code": 0, "data": {"message_id": "om_review"}},
-            ]),
+            new=AsyncMock(side_effect=AssertionError("不应发送采购或财务私聊")),
         ), patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
@@ -735,8 +749,8 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual([], result["operations"])
-        self.assertEqual(["om_proc"], result["procurement"])
-        self.assertEqual(["om_review"], result["finance_review"])
+        self.assertEqual([], result["procurement"])
+        self.assertEqual([], result["finance_review"])
 
     async def test_operations_gap_sends_group_card_and_never_calls_procurement(self):
         settlement = {
@@ -757,7 +771,7 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             "app.card_workflow._send_ops_card",
             new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
         ) as send_ops, patch.object(
-            cost_gap_alert.feishu,
+            feishu,
             "resolve_users_by_job_title",
             new=AsyncMock(side_effect=AssertionError("operations gap must not resolve procurement")),
         ), patch.object(
@@ -778,7 +792,7 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
         sent_card = send_ops.await_args.args[0]
         self.assertIn("<at id=ou_event_zhao></at>", str(sent_card))
 
-    async def test_procurement_gap_sends_only_to_procurement_role(self):
+    async def test_zero_cost_gap_sends_only_to_operations_group(self):
         settlement = {
             "gap_rows": [[
                 "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
@@ -790,18 +804,20 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "FUNLAB Dock", 2, 0, 0, "成本缺失/为0",
             ]],
         }
-        response = {"code": 0, "data": {"message_id": "om_proc"}}
         with patch(
             "app.card_workflow._ops_group_mentions",
-            new=AsyncMock(side_effect=AssertionError("procurement gap must not resolve operations")),
-        ), patch.object(
-            cost_gap_alert.feishu,
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
+        ) as send_ops, patch.object(
+            feishu,
             "resolve_users_by_job_title",
-            new=AsyncMock(return_value={"ou_proc": "李采购"}),
+            new=AsyncMock(side_effect=AssertionError("不应解析采购岗位")),
         ) as resolve_proc, patch.object(
-            cost_gap_alert.feishu,
+            feishu,
             "send_interactive_open_id",
-            new=AsyncMock(return_value=response),
+            new=AsyncMock(side_effect=AssertionError("不应私聊采购")),
         ) as send_proc, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
@@ -815,18 +831,13 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07", settlement, {}, frankie_only=False
             )
 
-        self.assertEqual([], result["operations"])
-        self.assertEqual(["om_proc"], result["procurement"])
-        resolve_proc.assert_awaited_once_with(
-            cost_gap_alert.PROCUREMENT_DEPT_ROOTS,
-            cost_gap_alert.PROCUREMENT_JOB_TITLES,
-        )
-        send_proc.assert_awaited_once()
-        self.assertEqual("ou_proc", send_proc.await_args.args[0])
-        self.assertIn("ERP SKU FL-DOCK-001", str(send_proc.await_args.args[1]))
-        self.assertEqual(False, send_proc.await_args.kwargs["use_event_app"])
+        self.assertEqual(["om_ops"], result["operations"])
+        self.assertEqual([], result["procurement"])
+        resolve_proc.assert_not_awaited()
+        send_proc.assert_not_awaited()
+        self.assertIn("ERP SKU FL-DOCK-001", str(send_ops.await_args.args[0]))
 
-    async def test_unknown_cost_gap_stays_with_frankie_instead_of_business_teams(self):
+    async def test_ambiguous_procurement_cost_gap_still_routes_to_operations(self):
         settlement = {
             "gap_rows": [[
                 "P0", "天猫", "天猫纷岚", "2026-07", "采购成本",
@@ -835,18 +846,20 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
             ]],
             "cost_rows": [],
         }
-        response = {"code": 0, "data": {"message_id": "om_review"}}
         with patch(
             "app.card_workflow._ops_group_mentions",
-            new=AsyncMock(side_effect=AssertionError("unknown gap must not notify operations")),
-        ), patch.object(
-            cost_gap_alert.feishu,
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(return_value=(["om_ops"], ["国内电商平台沟通群"], "group")),
+        ) as send_ops, patch.object(
+            feishu,
             "resolve_users_by_job_title",
-            new=AsyncMock(side_effect=AssertionError("unknown gap must not notify procurement")),
+            new=AsyncMock(side_effect=AssertionError("不应解析采购岗位")),
         ), patch.object(
-            cost_gap_alert.feishu,
+            feishu,
             "send_interactive_open_id",
-            new=AsyncMock(return_value=response),
+            new=AsyncMock(side_effect=AssertionError("不应私聊采购或财务")),
         ) as send_review, patch.object(
             cost_gap_alert.ledger,
             "audit_exists",
@@ -860,10 +873,10 @@ class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
                 "2026-07", settlement, {}, frankie_only=False
             )
 
-        self.assertEqual(["om_review"], result["finance_review"])
-        send_review.assert_awaited_once()
-        self.assertEqual(cost_gap_alert.config.FRANKIE_OPEN_ID, send_review.await_args.args[0])
-        self.assertIn("暂不派给运营或采购", str(send_review.await_args.args[1]))
+        self.assertEqual(["om_ops"], result["operations"])
+        self.assertEqual([], result["finance_review"])
+        send_review.assert_not_awaited()
+        self.assertIn("待核实对象 mystery-001", str(send_ops.await_args.args[0]))
 
 
 if __name__ == "__main__":
