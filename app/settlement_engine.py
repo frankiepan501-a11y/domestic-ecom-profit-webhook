@@ -267,6 +267,13 @@ def _matching_files(files: list[dict[str, Any]], *keywords: str) -> list[dict[st
     return out
 
 
+def _is_order_detail_export(filename: str) -> bool:
+    """Recognize official order and item detail exports used to enrich settlement rows."""
+    return any(keyword in filename for keyword in (
+        "订单明细", "订单查询", "ExportOrderList", "ExportItemlList", "ExportItemList",
+    ))
+
+
 class SettlementReport:
     def __init__(self, year_month: str):
         self.year_month = year_month
@@ -483,7 +490,7 @@ def extract_sf_waybills(raw: dict, year_month: str) -> set[str]:
         if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
             continue
         try:
-            if "ExportOrderList" in fname or "订单明细" in fname or "订单查询" in fname:
+            if _is_order_detail_export(fname):
                 rows = sheet_rows(sf.get("buf") or b"", fname, "export") or sheet_rows(sf.get("buf") or b"", fname)
             else:
                 continue
@@ -503,7 +510,7 @@ def extract_skus(raw: dict, year_month: str) -> set[str]:
         fname = _fname(sf)
         if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
             continue
-        if not any(k in fname for k in ("订单", "ExportOrderList", "订单查询")):
+        if not _is_order_detail_export(fname):
             continue
         try:
             rows = sheet_rows(sf.get("buf") or b"", fname, "export") or sheet_rows(sf.get("buf") or b"", fname)
@@ -582,7 +589,7 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
                        "补交易货款文件后重跑")
         report.add_monthly("天猫", shop, 0, 0, 0, 0, 0, 0, 0, 0, 0, "缺交易货款文件")
         return
-    order_files = [sf for sf in files if "ExportOrderList" in _fname(sf) or "订单明细" in _fname(sf)]
+    order_files = [sf for sf in files if _is_order_detail_export(_fname(sf))]
     trade_rows = read_csv(trade_sf.get("buf") or b"", prefer_gbk=True)
     order_rows: list[dict[str, Any]] = []
     for sf in order_files:
@@ -596,7 +603,11 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
     for r in order_rows:
         sub = norm(p(r, "子订单编号"))
         if sub:
-            order_by_sub[sub] = r
+            merged = dict(order_by_sub.get(sub, {}))
+            # 淘宝可能把物流字段放在 ExportOrderList、商家编码放在
+            # ExportItemlList；按子订单合并非空字段，避免只读到半张信息。
+            merged.update({key: value for key, value in r.items() if norm(value)})
+            order_by_sub[sub] = merged
     fee_by_order: dict[str, float] = defaultdict(float)
     platform_fee, ad_fee = read_tmall_fees(report, files, shop, fee_by_order)
     report.add_source("天猫", shop, "广告/平台费用", "多个csv", "", "已读取",
