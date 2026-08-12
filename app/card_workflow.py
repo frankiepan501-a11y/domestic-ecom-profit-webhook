@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import UploadFile
 
-from . import cards, config, feishu, ledger, task_runner, task_seeder, writer
+from . import cards, company_profit, config, feishu, ledger, task_runner, task_seeder, writer
 
 
 SHOP_FILE_FIELDS = [
@@ -28,6 +28,12 @@ FILE_TYPE_ORDER = {"订单明细": 1, "退款明细": 2, "当月结算账单": 3
 NO_SETTLEMENT_FILE_TYPES = {"订单明细", "退款明细", "当月结算账单", "平台费用"}
 DEFERABLE_SCOPE_PLATFORMS = {"淘宝", "拼多多"}
 FINANCE_CONFIRM_PLATFORMS = ("抖音", "天猫", "小红书", "京东")
+OUTPUT_GENERIC_DECISIONS = {
+    "accept_temp": "接受临时估算",
+    "return_data": "退回资料缺口",
+    "return_method": "退回口径问题",
+    "pending": "待确认",
+}
 SETTLEMENT_FILE_KEYWORDS = (
     "当月结算账单", "结算账单", "结算订单", "交易货款", "商品结算明细",
     "订单结算明细", "订单结算明细对账", "货款明细", "settlement", "settle",
@@ -696,6 +702,15 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     output = output or await ledger.latest_output(run_id)
     if not run or not output:
         return {"sent": [], "error": "missing run/output"}
+    open_p0 = await ledger.open_p0_gaps(run_id)
+    if open_p0:
+        await ledger.update_run(
+            run_id,
+            "P0待补件",
+            "finance_card_blocked_by_open_p0",
+            f"仍有 {len(open_p0)} 个 P0，禁止发送财务终审卡",
+        )
+        return {"sent": [], "error": "open_p0", "open_p0": len(open_p0), "run_id": run_id}
     if not platform:
         return await send_platform_finance_cards(run_id, output, frankie_only=frankie_only)
     if grant_access:
@@ -703,6 +718,41 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     gaps = await ledger.gaps_for_run(run_id)
     platform_output = _with_output_platform(output, platform)
     report_summary = await _platform_report_summary(platform_output, platform)
+    if report_summary.get("blocking_issues"):
+        await ledger.update_run(
+            run_id,
+            "P0待补件",
+            "finance_card_blocked_by_report_summary",
+            f"{platform} 报表仍有 {len(report_summary['blocking_issues'])} 个阻断问题",
+        )
+        return {
+            "sent": [],
+            "error": "report_blocker",
+            "blocking_issues": report_summary["blocking_issues"],
+            "run_id": run_id,
+            "platform": platform,
+        }
+    await invalidate_finance_cards_for_run(
+        run_id,
+        reason="已有新版毛利报表，本卡无效，请勿操作",
+        include_current=False,
+        platform_filter=platform,
+    )
+    existing_ids = [
+        item.strip()
+        for item in _ftext(platform_output.get("fields", {}).get("确认卡message_id")).split(",")
+        if item.strip()
+    ]
+    current_decision = _ftext(platform_output.get("fields", {}).get("财务决定"))
+    if existing_ids and current_decision == "待确认":
+        return {
+            "sent": existing_ids,
+            "targets": [],
+            "target_mode": "existing",
+            "output_id": _ftext(platform_output.get("fields", {}).get("output_id")),
+            "platform": platform,
+            "already_sent": True,
+        }
     card = cards.finance_confirm_card(platform_output, run, gaps, report_summary=report_summary)
     sent, targets, target_mode = await _send_finance_confirm_card(card, frankie_only=frankie_only)
     output_id = _ftext(platform_output.get("fields", {}).get("output_id"))
@@ -893,9 +943,102 @@ async def _finance_platform_done_summary(run_id: str, workbook_url: str) -> tupl
         output_id = ledger.output_id_for(run_id, workbook_url, platform)
         rec = await ledger.find_first(ledger.OUTPUT_TABLE, "output_id", output_id)
         decision = _ftext((rec or {}).get("fields", {}).get("财务决定"))
-        if decision in (f"{platform}：确认定稿", f"{platform}：接受临时估算"):
+        if decision in (f"{platform}：确认定稿", OUTPUT_GENERIC_DECISIONS["accept_temp"]):
             done += 1
     return done, total
+
+
+async def _current_report_url(run_id: str) -> str:
+    run = await ledger.find_first(ledger.RUN_TABLE, "run_id", run_id)
+    legacy_id = _ftext((run or {}).get("fields", {}).get("legacy_summary_record_id"))
+    if not legacy_id:
+        return ""
+    current = await feishu.bitable_get_record(config.TASK_APP_TOKEN, config.TASK_TABLE_ID, legacy_id)
+    fields = ((current.get("data") or {}).get("record") or {}).get("fields") or {}
+    return _link_url(fields.get("报表飞书链接"))
+
+
+async def is_current_finance_output(run_id: str, platform: str, output_id: str) -> bool:
+    current_url = await _current_report_url(run_id)
+    if not current_url or not platform or not output_id:
+        return False
+    return output_id == ledger.output_id_for(run_id, current_url, platform)
+
+
+def _output_platform(output: dict) -> str:
+    fields = output.get("fields", {})
+    run_id = _ftext(fields.get("run_id"))
+    workbook_url = _link_url(fields.get("workbook链接"))
+    output_id = _ftext(fields.get("output_id"))
+    for platform in FINANCE_CONFIRM_PLATFORMS:
+        if output_id == ledger.output_id_for(run_id, workbook_url, platform):
+            return platform
+    return ""
+
+
+async def invalidate_finance_cards_for_run(
+    run_id: str,
+    *,
+    reason: str,
+    include_current: bool,
+    platform_filter: str = "",
+) -> dict:
+    outputs = await ledger.find_many(ledger.OUTPUT_TABLE, "run_id", run_id)
+    invalidated: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for output in outputs:
+        fields = output.get("fields", {})
+        platform = _output_platform(output)
+        if not platform or (platform_filter and platform != platform_filter):
+            continue
+        output_id = _ftext(fields.get("output_id"))
+        is_current = await is_current_finance_output(run_id, platform, output_id)
+        if not include_current and is_current:
+            continue
+        message_ids = [item.strip() for item in _ftext(fields.get("确认卡message_id")).split(",") if item.strip()]
+        if not message_ids:
+            continue
+        invalid_card = cards.processed_card(
+            "⚠️ 本卡无效，请勿操作",
+            reason,
+            ok=False,
+            details={"平台": platform, "报表批次": run_id, "旧输出编号": output_id},
+        )
+        patched: list[str] = []
+        for message_id in message_ids:
+            try:
+                response = await feishu.patch_message_card(message_id, invalid_card, use_event_app=True)
+                if response.get("code") == 0:
+                    patched.append(message_id)
+                else:
+                    failed.append({"message_id": message_id, "reason": str(response.get("msg") or response.get("code"))})
+            except Exception as exc:
+                failed.append({"message_id": message_id, "reason": f"{type(exc).__name__}: {exc}"})
+        if include_current and is_current and len(patched) == len(message_ids):
+            # 当前输出的旧卡也被主动停用后，清空发送槽位；P0 清零时才能发送一张新的有效卡。
+            # 历史 message_id 仍保留在审计日志和已 PATCH 的原消息中。
+            await ledger.update(
+                ledger.OUTPUT_TABLE,
+                output["record_id"],
+                {"确认卡message_id": ""},
+            )
+        invalidated.append({"output_id": output_id, "platform": platform, "message_ids": patched})
+    return {"run_id": run_id, "invalidated": invalidated, "invalidated_count": sum(len(x["message_ids"]) for x in invalidated), "failed": failed}
+
+
+async def finalize_after_platform_approvals(
+    run_id: str,
+    period: str,
+    output_id: str,
+    operator_open_id: str,
+    *,
+    aggregate=company_profit.finalize_domestic,
+) -> dict:
+    idempotency_key = f"domestic-to-company:{run_id}:{output_id}:{operator_open_id or 'finance'}"
+    result = await aggregate(period, idempotency_key)
+    if result.get("ok") and (result.get("aggregate_result") or {}).get("archived"):
+        return {"run_status": "已归档", "aggregate": result}
+    return {"run_status": "汇总失败待处理", "aggregate": result}
 
 
 async def _create_output_from_latest_legacy_report(year_month: str,
@@ -930,7 +1073,7 @@ async def _create_output_from_latest_legacy_report(year_month: str,
 async def send_finance_confirm_for_month(year_month: str | None = None, *,
                                          workbook_url: str = "",
                                          dry_run: bool = False,
-                                         frankie_only: bool = True) -> dict:
+                                         frankie_only: bool = False) -> dict:
     year_month = year_month or _prev_month()
     run_id, output = await _create_output_from_latest_legacy_report(year_month, workbook_url)
     if not output:
@@ -1073,6 +1216,39 @@ async def handle_callback(body: dict) -> dict:
         ctx["message_id"],
     )
 
+    if action.startswith("domestic_profit_finance_"):
+        output_id = str(value.get("output_id") or "")
+        platform = str(value.get("platform") or "")
+        if not await is_current_finance_output(run_id, platform, output_id):
+            result_message = "已有新版毛利报表，本卡无效，请勿操作。请以财务群内最新确认卡为准。"
+            await ledger.finalize_audit(
+                idempotency_key,
+                action,
+                ctx["operator_open_id"],
+                run_id,
+                "output",
+                output_id,
+                {},
+                {"message": result_message, "ok": False, "error": "superseded_output"},
+                {"value": value, "form_value": ctx["form_value"]},
+                "blocked_superseded_output",
+                ctx["message_id"],
+            )
+            card = cards.processed_card(
+                "⚠️ 本卡无效，请勿操作",
+                result_message,
+                ok=False,
+                details={"平台": platform, "报表批次": run_id, "旧输出编号": output_id},
+            )
+            patch = await _patch_or_reply(ctx["message_id"], ctx["chat_id"], ctx["operator_open_id"], card)
+            return {
+                "ok": False,
+                "error": "superseded_output",
+                "action": action,
+                "run_id": run_id,
+                "patch": patch,
+            }
+
     before: dict[str, Any] = {}
     result_message = "已处理。"
     ok = True
@@ -1162,7 +1338,7 @@ async def handle_callback(body: dict) -> dict:
             result_message = f"未知退回处理 action: {action}"
         if out and ok:
             await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
-                "财务决定": f"{platform_prefix}退回问题已处理，待重新确认",
+                "财务决定": OUTPUT_GENERIC_DECISIONS["pending"],
             })
     elif action.startswith("domestic_profit_finance_"):
         output_id = str(value.get("output_id") or "")
@@ -1171,7 +1347,11 @@ async def handle_callback(body: dict) -> dict:
         target_type = "output"
         target_id = output_id
         out = await ledger.find_first(ledger.OUTPUT_TABLE, "output_id", output_id) if output_id else None
-        if action == "domestic_profit_finance_approve":
+        open_p0 = await ledger.open_p0_gaps(run_id)
+        if open_p0:
+            ok = False
+            result_message = f"当前仍有 {len(open_p0)} 个 P0 缺口，禁止财务确认和归档。"
+        elif action == "domestic_profit_finance_approve":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
                     "财务决定": f"{platform_prefix}确认定稿",
@@ -1182,17 +1362,37 @@ async def handle_callback(body: dict) -> dict:
                 workbook_url = _link_url(out.get("fields", {}).get("workbook链接"))
                 done, total = await _finance_platform_done_summary(run_id, workbook_url)
                 if done >= total:
-                    await ledger.update_run(run_id, "已归档", action, "四个平台毛利确认卡均已完成")
-                    result_message = f"{platform} 毛利报表已确认定稿；{done}/{total} 平台已完成，报表运行台已归档。"
+                    finalized = await finalize_after_platform_approvals(
+                        run_id, period, output_id, ctx["operator_open_id"]
+                    )
+                    if finalized["run_status"] == "已归档":
+                        await ledger.update_run(run_id, "已归档", action, "公司总毛利表汇总成功后归档")
+                        result_message = f"{platform} 毛利报表已确认定稿；{done}/{total} 平台已完成，已写入公司总毛利表并归档。"
+                    else:
+                        ok = False
+                        reason = (finalized.get("aggregate") or {}).get("reason") or "公司总表汇总失败"
+                        await ledger.update_run(run_id, "财务确认", action, f"公司总表汇总失败待处理：{reason}")
+                        result_message = f"{platform} 毛利报表已确认，但公司总毛利表汇总未成功，未归档：{reason}"
                 else:
                     await ledger.update_run(run_id, "待财务确认", action, f"{platform} 已确认，等待其他平台确认")
                     result_message = f"{platform} 毛利报表已确认定稿；当前 {done}/{total} 平台已完成。"
             else:
-                await ledger.update_run(run_id, "已归档", action, "财务已确认定稿")
-                result_message = "财务已确认定稿，报表运行台已归档。"
+                finalized = await finalize_after_platform_approvals(
+                    run_id, period, output_id, ctx["operator_open_id"]
+                )
+                if finalized["run_status"] == "已归档":
+                    await ledger.update_run(run_id, "已归档", action, "公司总毛利表汇总成功后归档")
+                    result_message = "财务已确认定稿，已写入公司总毛利表并归档。"
+                else:
+                    ok = False
+                    reason = (finalized.get("aggregate") or {}).get("reason") or "公司总表汇总失败"
+                    await ledger.update_run(run_id, "财务确认", action, f"公司总表汇总失败待处理：{reason}")
+                    result_message = f"财务已确认，但公司总毛利表汇总未成功，未归档：{reason}"
         elif action == "domestic_profit_finance_return_data_gap":
             if out:
-                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回资料缺口"})
+                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
+                    "财务决定": OUTPUT_GENERIC_DECISIONS["return_data"],
+                })
             await ledger.update_run(run_id, "财务退回资料缺口", action, f"财务退回：{platform_prefix}资料缺口")
             follow = await _send_finance_return_followup(run_id, period, platform, output_id, "data", out)
             result_message = (
@@ -1201,7 +1401,9 @@ async def handle_callback(body: dict) -> dict:
             )
         elif action == "domestic_profit_finance_return_method_gap":
             if out:
-                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回口径问题"})
+                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
+                    "财务决定": OUTPUT_GENERIC_DECISIONS["return_method"],
+                })
             await ledger.update_run(run_id, "财务退回口径问题", action, f"财务退回：{platform_prefix}口径问题")
             follow = await _send_finance_return_followup(run_id, period, platform, output_id, "method", out)
             result_message = (
@@ -1210,8 +1412,10 @@ async def handle_callback(body: dict) -> dict:
             )
         elif action == "domestic_profit_finance_return_data_and_method_gap":
             if out:
-                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {"财务决定": f"{platform_prefix}退回资料缺口和口径问题"})
-            await ledger.update_run(run_id, "财务退回资料和口径问题", action, f"财务退回：{platform_prefix}资料缺口和口径问题")
+                await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
+                    "财务决定": OUTPUT_GENERIC_DECISIONS["return_data"],
+                })
+            await ledger.update_run(run_id, "财务退回资料缺口", action, f"财务退回：{platform_prefix}资料缺口和口径问题")
             follow = await _send_finance_return_followup(run_id, period, platform, output_id, "combined", out)
             result_message = (
                 f"已退回{platform_prefix}资料缺口和金额/口径问题，后续需要补资料并修正/解释后再确认。"
@@ -1220,7 +1424,7 @@ async def handle_callback(body: dict) -> dict:
         elif action == "domestic_profit_finance_accept_temp":
             if out:
                 await ledger.update(ledger.OUTPUT_TABLE, out["record_id"], {
-                    "财务决定": f"{platform_prefix}接受临时估算",
+                    "财务决定": OUTPUT_GENERIC_DECISIONS["accept_temp"],
                     "财务确认人": ctx["operator_open_id"],
                     "确认时间": ledger.now_ms(),
                 })
@@ -1228,14 +1432,32 @@ async def handle_callback(body: dict) -> dict:
                 workbook_url = _link_url(out.get("fields", {}).get("workbook链接"))
                 done, total = await _finance_platform_done_summary(run_id, workbook_url)
                 if done >= total:
-                    await ledger.update_run(run_id, "财务接受临时估算", action, "四个平台毛利确认卡均已完成，含临时估算")
-                    result_message = f"{platform} 已确认定稿并接受上述例外；{done}/{total} 平台已完成，进入旁路终态。"
+                    finalized = await finalize_after_platform_approvals(
+                        run_id, period, output_id, ctx["operator_open_id"]
+                    )
+                    if finalized["run_status"] == "已归档":
+                        await ledger.update_run(run_id, "已归档", action, "公司总毛利表汇总成功后归档，含财务接受例外")
+                        result_message = f"{platform} 已确认定稿并接受上述例外；{done}/{total} 平台已完成，已写入公司总毛利表并归档。"
+                    else:
+                        ok = False
+                        reason = (finalized.get("aggregate") or {}).get("reason") or "公司总表汇总失败"
+                        await ledger.update_run(run_id, "财务确认", action, f"公司总表汇总失败待处理：{reason}")
+                        result_message = f"{platform} 已确认例外，但公司总毛利表汇总未成功，未归档：{reason}"
                 else:
                     await ledger.update_run(run_id, "待财务确认", action, f"{platform} 已接受临时估算，等待其他平台确认")
                     result_message = f"{platform} 已确认定稿并接受上述例外；当前 {done}/{total} 平台已完成。"
             else:
-                await ledger.update_run(run_id, "财务接受临时估算", action, "财务接受临时估算旁路终态")
-                result_message = "财务已确认定稿并接受临时估算/暂缓说明，进入旁路终态。"
+                finalized = await finalize_after_platform_approvals(
+                    run_id, period, output_id, ctx["operator_open_id"]
+                )
+                if finalized["run_status"] == "已归档":
+                    await ledger.update_run(run_id, "已归档", action, "公司总毛利表汇总成功后归档，含财务接受例外")
+                    result_message = "财务已确认定稿并接受临时估算/暂缓说明，已写入公司总毛利表并归档。"
+                else:
+                    ok = False
+                    reason = (finalized.get("aggregate") or {}).get("reason") or "公司总表汇总失败"
+                    await ledger.update_run(run_id, "财务确认", action, f"公司总表汇总失败待处理：{reason}")
+                    result_message = f"财务已确认例外，但公司总毛利表汇总未成功，未归档：{reason}"
     else:
         ok = False
         result_message = f"未知 action: {action}"

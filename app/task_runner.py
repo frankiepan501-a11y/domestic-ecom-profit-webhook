@@ -10,7 +10,7 @@ import json
 import os
 import traceback
 from datetime import datetime
-from . import config, cost_gap_alert, feishu, parsers, engine, writer, lingxing, sf_api, settlement_engine
+from . import config, cost_gap_alert, feishu, parsers, engine, writer, lingxing, sf_api, settlement_engine, ledger
 
 
 # v0.3: 全 9 店铺 (加抖音宝空 + 京东宝空, 京东 parser 重写支持费用流水按订单聚合)
@@ -288,19 +288,80 @@ async def collect_raw_data(year_month: str) -> dict:
                     continue
                 raw["logistics"].extend(res["data"])
 
+    try:
+        manifests = await ledger.manifests_for_run(ledger.run_id_for_month(year_month))
+        raw["manifest_statuses"] = [
+            {
+                "platform": ledger.extract_text(rec.get("fields", {}).get("平台")),
+                "shop": ledger.extract_text(rec.get("fields", {}).get("店铺")),
+                "file_type": ledger.extract_text(rec.get("fields", {}).get("文件类型")),
+                "status": ledger.extract_text(rec.get("fields", {}).get("状态")),
+            }
+            for rec in manifests
+        ]
+    except Exception as exc:
+        raw["manifest_statuses"] = []
+        raw["errors"].append(f"资料清单状态读取失败: {type(exc).__name__}: {exc}")
     return raw
 
 
-async def run_profit(record_id: str) -> dict:
+async def sync_settlement_p0_gaps(year_month: str, settlement: dict) -> dict:
+    """Make calculated P0s part of the same ledger gate used by finance cards."""
+    run_id = ledger.run_id_for_month(year_month)
+    gap_type_map = {
+        "资料缺口": "其他",
+        "订单明细匹配": "ERP_SKU缺失",
+        "采购成本": "ERP_SKU缺失",
+        "物流成本": "物流账单缺失",
+    }
+    current_ids: set[str] = set()
+    for row in settlement.get("gap_rows", []):
+        if len(row) < 9 or str(row[0]).strip() != "P0":
+            continue
+        platform, shop, month, category, obj, problem, impact, action = [str(x or "").strip() for x in row[1:9]]
+        evidence = f"[初检计算] {shop}｜对象：{obj or shop}｜问题：{problem}｜影响：{impact}｜补件：{action}"
+        gap = await ledger.create_gap(
+            run_id,
+            gap_type_map.get(category, "其他"),
+            platform,
+            month or year_month,
+            evidence,
+        )
+        gap_id = ledger.extract_text(gap.get("fields", {}).get("gap_id"))
+        if gap_id:
+            current_ids.add(gap_id)
+            await ledger.mark_gap(gap_id, {"处理结果": "待处理", "是否可定稿": False})
+    for gap in await ledger.gaps_for_run(run_id):
+        fields = gap.get("fields", {})
+        gap_id = ledger.extract_text(fields.get("gap_id"))
+        if ledger.extract_text(fields.get("证据")).startswith("[初检计算]") and gap_id not in current_ids:
+            await ledger.mark_gap(gap_id, {"处理结果": "已关闭", "是否可定稿": True})
+    return {"run_id": run_id, "open_calculated_p0": len(current_ids), "gap_ids": sorted(current_ids)}
+
+
+async def run_profit(
+    record_id: str,
+    *,
+    suppress_notify: bool | None = None,
+    initial_check_only: bool = False,
+) -> dict:
     started_at = datetime.now()
     started_ms = int(started_at.timestamp() * 1000)
+    notifications_suppressed = (
+        True
+        if initial_check_only
+        else suppress_notify
+        if suppress_notify is not None
+        else os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False")
+    )
 
     try:
-        await update_status(record_id, {
-            "任务状态": "计算中",
-            "计算开始时间": started_ms,
-            "错误日志": "",
-        })
+        if not initial_check_only:
+            await update_status(record_id, {
+                "任务状态": "计算中",
+                "计算开始时间": started_ms,
+                "错误日志": "",
+            })
 
         rec = await get_record(record_id)
         m = rec.get("月份")
@@ -401,6 +462,7 @@ async def run_profit(record_id: str) -> dict:
                                 raw["ads"], raw["logistics"], sku_costs, sku_names,
                                 year_month=year_month)
         settlement = settlement_engine.compute(raw, cost_map, year_month)
+        await sync_settlement_p0_gaps(year_month, settlement)
         settlement_cost_gap_count = sum(
             1 for g in settlement.get("gap_rows", [])
             if len(g) >= 7
@@ -408,26 +470,41 @@ async def run_profit(record_id: str) -> dict:
             and g[4] in cost_gap_alert.OPERATIONS_GAP_CATEGORIES
             and str(g[5]).strip()
         )
-        if settlement_cost_gap_count:
+        refreshed: dict = {}
+        refresh_error = ""
+        if notifications_suppressed:
+            try:
+                refreshed = await cost_gap_alert.refresh_existing_operation_gap_cards(
+                    year_month,
+                    settlement,
+                    raw,
+                )
+                print(
+                    "  ✓ 静默重跑仅更新原缺口卡: "
+                    f"有效卡 {len(refreshed['active_message_ids'])} / "
+                    f"停用旧卡 {len(refreshed['invalidated_message_ids'])} / "
+                    f"未找到可更新原卡 {refreshed['missing_existing_cards']}"
+                )
+            except Exception as e:
+                refresh_error = f"{type(e).__name__}: {e}"
+                print(f"  ✗ 静默更新原缺口卡失败: {type(e).__name__}: {e}")
+        elif settlement_cost_gap_count:
             print(f"  ⚠️ 财务签核口径成本/订单资料 P0 {settlement_cost_gap_count} 个 → 按责任分流")
-            if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
-                print("  ⏭ 成本缺口分流卡已抑制 (REPORT_SUPPRESS_NOTIFY)")
-            else:
-                try:
-                    alert_result = await cost_gap_alert.send_settlement_cost_gap_alerts(
-                        year_month,
-                        settlement,
-                        raw,
-                        frankie_only=config.COST_GAP_ALERT_FRANKIE_ONLY,
-                    )
-                    print(
-                        "  ✓ 成本缺口分流卡: "
-                        f"运营 {len(alert_result['operations'])} / "
-                        f"采购 {len(alert_result['procurement'])} / "
-                        f"待财务判断 {len(alert_result['finance_review'])}"
-                    )
-                except Exception as e:
-                    print(f"  成本缺口分流卡失败: {e}")
+            try:
+                alert_result = await cost_gap_alert.send_settlement_cost_gap_alerts(
+                    year_month,
+                    settlement,
+                    raw,
+                    frankie_only=config.COST_GAP_ALERT_FRANKIE_ONLY,
+                )
+                print(
+                    "  ✓ 成本缺口分流卡: "
+                    f"运营 {len(alert_result['operations'])} / "
+                    f"采购 {len(alert_result['procurement'])} / "
+                    f"待财务判断 {len(alert_result['finance_review'])}"
+                )
+            except Exception as e:
+                print(f"  成本缺口分流卡失败: {e}")
         else:
             raw_zero_cost = [
                 s for s in raw["sku_set"]
@@ -438,6 +515,36 @@ async def run_profit(record_id: str) -> dict:
                     f"  ⏭ 原始订单附件有 {len(raw_zero_cost)} 个成本为0的SKU，但结算签核口径无采购成本P0，"
                     "不发送即时告警"
                 )
+
+        if initial_check_only:
+            run_id = ledger.run_id_for_month(year_month)
+            open_p0 = await ledger.open_p0_gaps(run_id)
+            refresh_complete = (
+                not refresh_error
+                and not refreshed.get("failed")
+                and int(refreshed.get("missing_existing_cards") or 0) == 0
+            )
+            next_status = "P0待补件" if open_p0 else "待AI试算"
+            await ledger.update_run(
+                run_id,
+                next_status,
+                "silent_initial_check",
+                f"使用运营现有附件静默重跑初检；当前P0缺口 {len(open_p0)} 个；未生成新报表或新卡片",
+            )
+            return {
+                "ok": refresh_complete,
+                "mode": "initial_check_only",
+                "year_month": year_month,
+                "run_id": run_id,
+                "open_p0": len(open_p0),
+                "calculated_p0": settlement_cost_gap_count,
+                "gap_rows": settlement.get("gap_rows", []),
+                "card_refresh": refreshed,
+                "card_refresh_error": refresh_error,
+                "created_report": False,
+                "sent_new_card": False,
+                "error": "" if refresh_complete else "初检已完成，但原缺口卡未全部更新；未发送新卡片",
+            }
 
         # 4. 创建新表
         token, sm = await writer.create_report_spreadsheet(year_month)
@@ -512,7 +619,7 @@ async def run_profit(record_id: str) -> dict:
             + f"\n原始资料: {config.DOMESTIC_ECOM_SOURCE_ARCHIVE_DESC}"
             + "\n📌 请注意查收")
         # REPORT_SUPPRESS_NOTIFY=1 时静默重生(修复重跑用), 不打扰收件人; 缺省/0 正常通知。
-        if os.getenv("REPORT_SUPPRESS_NOTIFY", "").strip() not in ("", "0", "false", "False"):
+        if notifications_suppressed:
             print("  ⏭ 通知已抑制 (REPORT_SUPPRESS_NOTIFY)")
         else:
             await _notify_report_ready(msg)
@@ -522,11 +629,12 @@ async def run_profit(record_id: str) -> dict:
     except Exception as e:
         err_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()[:1500]}"
         print(f"❌ {err_msg}")
-        try:
-            await update_status(record_id, {
-                "任务状态": "❌失败",
-                "错误日志": err_msg[:500],
-            })
-        except Exception:
-            pass
+        if not initial_check_only:
+            try:
+                await update_status(record_id, {
+                    "任务状态": "❌失败",
+                    "错误日志": err_msg[:500],
+                })
+            except Exception:
+                pass
         return {"ok": False, "error": err_msg}

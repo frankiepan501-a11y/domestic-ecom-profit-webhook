@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-app = FastAPI(title="domestic-ecom-profit", version="0.3.4")
+app = FastAPI(title="domestic-ecom-profit", version="0.4.0")
 
 
 class RunRequest(BaseModel):
@@ -14,7 +14,7 @@ class RunRequest(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.3.4", "task_app": config.TASK_APP_TOKEN,
+    return {"status": "ok", "version": "0.4.0", "task_app": config.TASK_APP_TOKEN,
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
             "report_create_error_detail": True,
@@ -43,6 +43,17 @@ async def run_profit_sync(req: RunRequest, authorization: str | None = Header(No
     _check_auth(authorization)
     res = await task_runner.run_profit(req.record_id)
     return res
+
+
+@app.post("/profit/rerun-initial-check")
+async def rerun_initial_check(req: RunRequest, authorization: str | None = Header(None)):
+    """只用运营已上传附件重跑初检；不生成报表、不发新卡片。"""
+    _check_auth(authorization)
+    return await task_runner.run_profit(
+        req.record_id,
+        suppress_notify=True,
+        initial_check_only=True,
+    )
 
 
 @app.get("/profit/poll")
@@ -142,9 +153,9 @@ async def cards_test_samples(year_month: str | None = None, send: bool = False,
 async def cards_finance_confirm(year_month: str | None = None,
                                 workbook_url: str = "",
                                 dry_run: bool = False,
-                                frankie_only: bool = True,
+                                frankie_only: bool = False,
                                 authorization: str | None = Header(None)):
-    """Send platform-level monthly gross-profit confirmation cards. Defaults to Frankie-only smoke."""
+    """Send platform-level monthly gross-profit confirmation cards. Production defaults to finance group."""
     _check_auth(authorization)
     from . import card_workflow
     return await card_workflow.send_finance_confirm_for_month(
@@ -152,6 +163,20 @@ async def cards_finance_confirm(year_month: str | None = None,
         workbook_url=workbook_url,
         dry_run=dry_run,
         frankie_only=frankie_only,
+    )
+
+
+@app.post("/cards/invalidate-finance")
+async def cards_invalidate_finance(year_month: str,
+                                   include_current: bool = True,
+                                   authorization: str | None = Header(None)):
+    """Patch existing finance cards into a non-actionable state; never sends a replacement card."""
+    _check_auth(authorization)
+    from . import card_workflow, ledger
+    return await card_workflow.invalidate_finance_cards_for_run(
+        ledger.run_id_for_month(year_month),
+        reason="本卡无效，请勿操作；系统修复后会在财务群发送唯一有效的新版本。",
+        include_current=include_current,
     )
 
 

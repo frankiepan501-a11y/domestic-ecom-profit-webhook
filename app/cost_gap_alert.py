@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import datetime
 from typing import Any
 
-from . import cards, config, ledger, settlement_engine
+from . import cards, config, feishu, ledger, settlement_engine
 
 
 OPS_PROBLEM_MARKERS = (
@@ -290,3 +292,140 @@ async def send_settlement_cost_gap_alerts(
                 )
 
     return sent_by_route
+
+
+def _existing_group_message_ids(audits: list[dict[str, Any]]) -> list[str]:
+    """Return distinct operation-gap group-card message ids, oldest first."""
+    found: list[tuple[int, str]] = []
+    for rec in audits:
+        fields = rec.get("fields") or {}
+        if (
+            _text(fields.get("action")) != "cost_gap_alert_v2"
+            or _text(fields.get("target_id")) != "operations"
+            or _text(fields.get("result")) != "sent"
+        ):
+            continue
+        try:
+            after = json.loads(ledger.extract_text(fields.get("after_json")) or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if _text(after.get("channel")) != "group":
+            continue
+        created_raw = ledger.extract_text(fields.get("created_at"))
+        try:
+            created_at = int(float(created_raw or 0))
+        except ValueError:
+            try:
+                created_at = int(datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp() * 1000)
+            except (TypeError, ValueError):
+                created_at = 0
+        for message_id in after.get("message_ids") or []:
+            if _text(message_id):
+                found.append((created_at, _text(message_id)))
+    ordered: list[str] = []
+    for _, message_id in sorted(found, key=lambda item: item[0]):
+        if message_id not in ordered:
+            ordered.append(message_id)
+    return ordered
+
+
+async def refresh_existing_operation_gap_cards(
+    month: str,
+    settlement: dict[str, Any],
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch existing production gap cards after a silent rerun; never send a new card."""
+    from . import card_workflow
+
+    run_id = ledger.run_id_for_month(month)
+    audits = await ledger.find_many(ledger.AUDIT_TABLE, "run_id", run_id)
+    existing_message_ids = _existing_group_message_ids(audits)
+    operations = classify_settlement_cost_gaps(
+        settlement,
+        order_context=extract_order_context(raw),
+    )["operations"]
+    pages = _pages(operations)
+
+    active_count = min(len(existing_message_ids), len(pages))
+    active_message_ids = existing_message_ids[-active_count:] if active_count else []
+    invalidated_message_ids = existing_message_ids[:-active_count] if active_count else list(existing_message_ids)
+    failed: list[dict[str, str]] = []
+    patched_active: list[str] = []
+    patched_invalid: list[str] = []
+
+    mentions: dict[str, str] = {}
+    if pages and active_message_ids:
+        mentions = await card_workflow._ops_group_mentions()
+    upload_url = (
+        f"{config.PUBLIC_BASE_URL}/upload?run_id={run_id}"
+        f"&token={ledger.upload_token(run_id, 'run')}"
+    )
+    for page_index, (message_id, page) in enumerate(
+        zip(active_message_ids, pages[-active_count:]),
+        start=max(1, len(pages) - active_count + 1),
+    ):
+        card = cards.cost_gap_alert_card(
+            month,
+            "operations",
+            page,
+            mention_open_ids=list(mentions),
+            action_url=upload_url,
+            all_entries=operations,
+            page_index=page_index,
+            page_count=len(pages),
+        )
+        try:
+            response = await feishu.patch_message_card(message_id, card, use_event_app=True)
+            if response.get("code") == 0:
+                patched_active.append(message_id)
+            else:
+                failed.append({"message_id": message_id, "reason": _text(response.get("msg") or response.get("code"))})
+        except Exception as exc:
+            failed.append({"message_id": message_id, "reason": f"{type(exc).__name__}: {exc}"})
+
+    invalid_card = cards.processed_card(
+        "⚠️ 本卡无效，请勿操作",
+        "系统已用现有附件重新初检；请以群内最新一张缺口卡为准。",
+        ok=False,
+        details={"月份": month, "处理": "旧卡停用，避免重复补件"},
+    )
+    for message_id in invalidated_message_ids:
+        try:
+            response = await feishu.patch_message_card(message_id, invalid_card, use_event_app=True)
+            if response.get("code") == 0:
+                patched_invalid.append(message_id)
+            else:
+                failed.append({"message_id": message_id, "reason": _text(response.get("msg") or response.get("code"))})
+        except Exception as exc:
+            failed.append({"message_id": message_id, "reason": f"{type(exc).__name__}: {exc}"})
+
+    missing_existing_cards = max(0, len(pages) - len(active_message_ids))
+    audit_key = (
+        f"cost-gap-refresh:{run_id}:"
+        f"{hashlib.sha1(ledger.compact_json(operations, limit=20000).encode('utf-8')).hexdigest()[:20]}"
+    )
+    await ledger.finalize_audit(
+        audit_key,
+        "cost_gap_card_refresh",
+        "system",
+        run_id,
+        "cost_gap",
+        "operations",
+        {"existing_message_ids": existing_message_ids},
+        {
+            "active_message_ids": patched_active,
+            "invalidated_message_ids": patched_invalid,
+            "missing_existing_cards": missing_existing_cards,
+            "failed": failed,
+        },
+        {"month": month, "gap_count": len(operations)},
+        "patched" if not failed and missing_existing_cards == 0 else "partial",
+    )
+    return {
+        "run_id": run_id,
+        "gap_count": len(operations),
+        "active_message_ids": patched_active,
+        "invalidated_message_ids": patched_invalid,
+        "missing_existing_cards": missing_existing_cards,
+        "failed": failed,
+    }

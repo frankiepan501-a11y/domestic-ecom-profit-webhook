@@ -274,6 +274,51 @@ def _is_order_detail_export(filename: str) -> bool:
     ))
 
 
+def _manifest_confirmed_no_data(raw: dict, platform: str, shop: str, file_type: str) -> bool:
+    for item in raw.get("manifest_statuses", []):
+        item_platform = norm(item.get("platform"))
+        item_shop = canonical_shop(item_platform, norm(item.get("shop")))
+        if (
+            item_platform == platform
+            and item_shop == shop
+            and norm(item.get("file_type")) == file_type
+            and norm(item.get("status")) == "已确认无数据"
+        ):
+            return True
+    return False
+
+
+def _douyin_settlement_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick by official field contract, not by an ambiguous file name such as 结算单."""
+    required = {"订单号", "结算单类型", "收入合计", "结算金额", "商品数量", "商品ID"}
+    for sf in sorted(files, key=lambda x: _fname(x)):
+        fname = _fname(sf)
+        if fname.startswith("~$"):
+            continue
+        rows = read_csv(sf.get("buf") or b"") if fname.lower().endswith(".csv") else sheet_rows(
+            sf.get("buf") or b"", fname
+        )
+        if rows and required.issubset({norm(key) for key in rows[0]}):
+            return sf
+    return None
+
+
+def _douyin_fee_files(files: list[dict[str, Any]]) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    out: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for sf in files:
+        fname = _fname(sf)
+        if not fname.lower().endswith(".csv"):
+            continue
+        rows = read_csv(sf.get("buf") or b"")
+        headers = {norm(key) for key in rows[0]} if rows else set()
+        if rows and (
+            {"动账方向", "动账场景", "动账金额"}.issubset(headers)
+            or "支付保费" in headers
+        ):
+            out.append((sf, rows))
+    return out
+
+
 class SettlementReport:
     def __init__(self, year_month: str):
         self.year_month = year_month
@@ -601,7 +646,7 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
 
     order_by_sub: dict[str, dict[str, Any]] = {}
     for r in order_rows:
-        sub = norm(p(r, "子订单编号"))
+        sub = norm(p(r, "子订单编号") or p(r, "订单编号") or p(r, "子订单号"))
         if sub:
             merged = dict(order_by_sub.get(sub, {}))
             # 淘宝可能把物流字段放在 ExportOrderList、商家编码放在
@@ -738,12 +783,56 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
     files = _files(raw, "抖音", shop)
     if not files:
         return
-    settle_sf = _pick_file(files, "结算订单")
-    order_sf = _pick_file(files, "订单明细")
-    if not settle_sf or not order_sf:
-        report.add_gap("P0", "抖音", shop, "资料缺口", shop, "缺结算订单或订单明细文件",
-                       "无法计算销售/成本/物流", "补结算订单和订单明细后重跑")
-        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, 0, "缺结算订单或订单明细")
+    settle_sf = _douyin_settlement_file(files)
+    order_sf = _pick_file(files, "订单明细") or _pick_file(files, "订单.csv")
+
+    other_fee = 0.0
+    for sf, tx_rows in _douyin_fee_files(files):
+        report.add_source("抖音", shop, "动账/平台费用", _fname(sf), len(tx_rows), "已读取",
+                          "只纳入权益保险/消费者赔付/上门取件运费等经营费用；主体变更资金划转排除")
+        for r in tx_rows:
+            scene = norm(p(r, "动账场景"))
+            direction = norm(p(r, "动账方向"))
+            amount = money(p(r, "动账金额"))
+            if scene in ("权益保险", "消费者赔付", "上门取件运费") and direction == "出账":
+                fee = abs(amount)
+                other_fee += fee
+                report.add_fee("抖音", shop, _fname(sf), scene, norm(p(r, "订单号")), fee, "动账金额",
+                               "计入其他经营费用")
+            elif money(p(r, "支付保费")) > 0:
+                fee = money(p(r, "支付保费"))
+                other_fee += fee
+                report.add_fee("抖音", shop, _fname(sf), "权益保险", norm(p(r, "订单编号")), fee, "支付保费",
+                               "计入其他经营费用")
+
+    if not settle_sf:
+        if _manifest_confirmed_no_data(raw, "抖音", shop, "当月结算账单"):
+            report.add_source("抖音", shop, "当月结算账单", "资料清单状态", 0, "已确认无数据",
+                              "运营已在资料提交页确认本月无结算")
+            report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee,
+                               "运营已确认本月无结算，按0试算")
+            return
+        uploaded = [
+            _fname(sf) for sf in files
+            if "结算" in _fname(sf) and _fname(sf).lower().endswith((".csv", ".xlsx", ".xls"))
+        ]
+        if uploaded:
+            problem = (
+                f"已上传 {uploaded[0]}，但表头不是抖音结算订单明细；"
+                "缺少订单号、结算单类型、收入合计、结算金额、商品数量、商品ID字段"
+            )
+            action = "从抖店资金/结算订单导出包含上述字段的结算订单明细，不要重复上传涉税报送明细"
+        else:
+            problem = "缺抖音结算订单明细文件"
+            action = "补抖音结算订单明细后重跑"
+        report.add_gap("P0", "抖音", shop, "资料缺口", shop, problem,
+                       "无法按结算月计算销售、退款、平台费和采购成本", action)
+        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee, "缺有效结算订单明细")
+        return
+    if not order_sf:
+        report.add_gap("P0", "抖音", shop, "资料缺口", shop, "缺订单明细文件",
+                       "无法补商家编码和物流单号", "补订单明细后重跑")
+        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee, "缺订单明细")
         return
     settle_rows = [r for r in read_csv(settle_sf.get("buf") or b"") if norm(p(r, "订单号"))]
     order_rows = sheet_rows(order_sf.get("buf") or b"", _fname(order_sf), "Sheet1")
@@ -757,26 +846,6 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         add_dy_index(by_order, oid, r)
         add_dy_index(by_order_product, f"{oid}|{product_id}", r)
 
-    other_fee = 0.0
-    for sf in _matching_files(files, "动账"):
-        tx_rows = read_csv(sf.get("buf") or b"")
-        report.add_source("抖音", shop, "动账", _fname(sf), len(tx_rows), "已读取",
-                          "只纳入权益保险/消费者赔付/上门取件运费等经营费用")
-        for r in tx_rows:
-            scene = norm(p(r, "动账场景"))
-            direction = norm(p(r, "动账方向"))
-            amount = money(p(r, "动账金额"))
-            if scene in ("权益保险", "消费者赔付", "上门取件运费") and direction == "出账":
-                fee = abs(amount)
-                other_fee += fee
-                report.add_fee("抖音", shop, _fname(sf), scene, norm(p(r, "订单号")), fee, "动账金额",
-                               "计入其他经营费用")
-            elif norm(p(r, "支付保费")):
-                fee = money(p(r, "支付保费"))
-                if fee > 0:
-                    other_fee += fee
-                    report.add_fee("抖音", shop, _fname(sf), "权益保险", norm(p(r, "订单编号")), fee, "支付保费",
-                                   "计入其他经营费用")
     for sf in files:
         fname = _fname(sf)
         if "税务" in fname or "涉税" in fname:
@@ -891,7 +960,12 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
     if not files:
         return
     settle_sf = _pick_file(files, "商品结算明细")
-    order_sf = _pick_file(files, "小红书订单查询") or _pick_file(files, "订单查询") or _pick_file(files, "结算订单明细")
+    order_sf = (
+        _pick_file(files, "小红书订单查询")
+        or _pick_file(files, "订单查询")
+        or _pick_file(files, "结算订单明细")
+        or _pick_file(files, "订单明细")
+    )
     settle_rows: list[dict[str, Any]] = []
     if settle_sf:
         settle_rows = sheet_rows(settle_sf.get("buf") or b"", _fname(settle_sf), "商品结算明细")

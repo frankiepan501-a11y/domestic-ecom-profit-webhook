@@ -9,6 +9,29 @@ from app import cards, cost_gap_alert, feishu
 
 
 class CostGapClassificationTests(unittest.TestCase):
+    def test_existing_gap_cards_sort_iso_and_numeric_created_times(self):
+        audits = [
+            {"fields": {
+                "action": "cost_gap_alert_v2",
+                "target_id": "operations",
+                "result": "sent",
+                "created_at": "2026-07-01T10:00:00+08:00",
+                "after_json": '{"message_ids":["om_iso"],"channel":"group"}',
+            }},
+            {"fields": {
+                "action": "cost_gap_alert_v2",
+                "target_id": "operations",
+                "result": "sent",
+                "created_at": 1782957600000,
+                "after_json": '{"message_ids":["om_numeric"],"channel":"group"}',
+            }},
+        ]
+
+        self.assertEqual(
+            ["om_iso", "om_numeric"],
+            cost_gap_alert._existing_group_message_ids(audits),
+        )
+
     def test_order_without_merchant_code_routes_to_operations(self):
         settlement = {
             "gap_rows": [[
@@ -317,6 +340,71 @@ class CostGapCardTests(unittest.TestCase):
 
 
 class CostGapNotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_silent_refresh_patches_latest_gap_card_and_invalidates_older_duplicates(self):
+        settlement = {
+            "gap_rows": [[
+                "P0", "抖音", "抖音宝空", "2026-07", "资料缺口",
+                "抖音宝空", "已上传文件不是可按订单核算的结算明细",
+                "无法逐订单核算结算收入及平台扣费",
+                "请补导含订单号、结算金额、收入合计、商品数量和商品ID的结算订单明细",
+            ]],
+            "cost_rows": [],
+        }
+        audits = [
+            {
+                "fields": {
+                    "action": "cost_gap_alert_v2",
+                    "target_id": "operations",
+                    "result": "sent",
+                    "created_at": 100,
+                    "after_json": '{"message_ids":["om_old"],"channel":"group"}',
+                }
+            },
+            {
+                "fields": {
+                    "action": "cost_gap_alert_v2",
+                    "target_id": "operations",
+                    "result": "sent",
+                    "created_at": 200,
+                    "after_json": '{"message_ids":["om_current"],"channel":"group"}',
+                }
+            },
+        ]
+        with patch.object(
+            cost_gap_alert.ledger,
+            "find_many",
+            new=AsyncMock(return_value=audits),
+        ), patch(
+            "app.card_workflow._ops_group_mentions",
+            new=AsyncMock(return_value={"ou_event_zhao": "赵伟俊"}),
+        ), patch.object(
+            feishu,
+            "patch_message_card",
+            new=AsyncMock(return_value={"code": 0}),
+        ) as patch_card, patch.object(
+            cost_gap_alert.ledger,
+            "finalize_audit",
+            new=AsyncMock(),
+        ), patch(
+            "app.card_workflow._send_ops_card",
+            new=AsyncMock(side_effect=AssertionError("静默重跑不得新增卡片")),
+        ):
+            result = await cost_gap_alert.refresh_existing_operation_gap_cards(
+                "2026-07", settlement, {}
+            )
+
+        self.assertEqual(["om_current"], result["active_message_ids"])
+        self.assertEqual(["om_old"], result["invalidated_message_ids"])
+        self.assertEqual(0, result["missing_existing_cards"])
+        self.assertEqual(2, patch_card.await_count)
+        rendered_by_message = {
+            call.args[0]: str(call.args[1]) for call in patch_card.await_args_list
+        }
+        self.assertIn("抖音宝空", rendered_by_message["om_current"])
+        self.assertIn("结算金额", rendered_by_message["om_current"])
+        self.assertIn("<at id=ou_event_zhao></at>", rendered_by_message["om_current"])
+        self.assertIn("本卡无效", rendered_by_message["om_old"])
+
     async def test_zero_cost_logistics_and_source_gaps_send_only_to_operations_group(self):
         settlement = {
             "gap_rows": [

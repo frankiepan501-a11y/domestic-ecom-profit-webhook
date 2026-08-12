@@ -364,12 +364,23 @@ def _strip_tab(v):
     return str(v).strip().lstrip("\t").strip()
 
 
-def parse_dy_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
-    """抖音订单 xlsx. 字段: 主订单/子订单/选购商品/商品ID/商家编码/商品数量/商品金额/
+def parse_dy_orders(buf: bytes, year_month: str, filename: str = "") -> tuple[list[dict], set]:
+    """抖音订单 xlsx/csv. 字段: 主订单/子订单/选购商品/商品ID/商家编码/商品数量/商品金额/
     订单提交时间/支付完成时间/订单状态/售后状态/订单类型/订单应付金额/运费/优惠/手续费/商家收入金额."""
-    wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
-    ws = wb.active
-    all_rows = list(ws.iter_rows(values_only=True))
+    wb = None
+    if buf[:4] == b"PK\x03\x04":
+        wb = openpyxl.load_workbook(io.BytesIO(buf), data_only=True)
+        ws = wb.active
+        all_rows = list(ws.iter_rows(values_only=True))
+    else:
+        text = None
+        for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk"):
+            try:
+                text = buf.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        all_rows = list(csv.reader(io.StringIO(text or "")))
     if not all_rows:
         return [], set()
     header = all_rows[0]
@@ -407,7 +418,8 @@ def parse_dy_orders(buf: bytes, year_month: str) -> tuple[list[dict], set]:
             "status": r[col.get("订单状态", -1)] or "",
             "refund_status": r[col.get("售后状态", -1)] or "",
         })
-    wb.close()
+    if wb is not None:
+        wb.close()
     return out, sku_set
 
 
@@ -457,7 +469,7 @@ def parse_dy_platform_fee(buf: bytes, source_name: str, year_month: str = "") ->
         if direction != "出账":
             continue
         scene = r[col.get("动账场景", -1)] or ""
-        if scene in NON_FEE_SCENES:
+        if scene in NON_FEE_SCENES or "主体变更" in scene or "资金转入" in scene or "资金转出" in scene:
             continue
         t = str(r[col.get("动账时间", -1)] or "") if "动账时间" in col else ""
         if year_month and year_month not in t:
@@ -971,7 +983,7 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
                 return {"kind": "广告", "data": parse_tmall_ads(buf)}
         elif platform == "抖音":
             if kind_hint == "订单":
-                data, skus = parse_dy_orders(buf, year_month)
+                data, skus = parse_dy_orders(buf, year_month, filename)
                 return {"kind": "订单", "data": data, "sku_set": list(skus)}
             if kind_hint == "退款":
                 return {"kind": "退款", "data": parse_dy_refunds(buf)}

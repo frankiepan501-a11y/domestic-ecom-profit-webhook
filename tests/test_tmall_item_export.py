@@ -56,6 +56,54 @@ class TmallItemExportTests(unittest.TestCase):
         self.assertIn("PK02-S2", extracted_skus)
         self.assertFalse(any("商家编码" in str(row[6]) for row in matching_gaps))
 
+    def test_order_number_alias_keeps_waybill_when_item_and_order_exports_are_split(self):
+        raw = {
+            "source_files": [
+                {
+                    "platform": "天猫",
+                    "shop": "POWKONG旗舰店",
+                    "fname": "交易货款_202607_202607.csv",
+                    "buf": (
+                        "子订单号,订单号,数量,订单实际金额（元）,退款金额（元）,商品名称\n"
+                        "5113837045333047045,5113837045333047045,1,99,0,食人花2代\n"
+                    ).encode("utf-8"),
+                },
+                {
+                    "platform": "天猫",
+                    "shop": "POWKONG旗舰店",
+                    "fname": "ExportItemlList.csv",
+                    "buf": (
+                        "子订单编号,主订单编号,商家编码,商品标题\n"
+                        "5113837045333047045,5113837045333047045,PK02-S2,食人花2代\n"
+                    ).encode("utf-8"),
+                },
+                {
+                    "platform": "天猫",
+                    "shop": "POWKONG旗舰店",
+                    "fname": "ExportOrderList.csv",
+                    "buf": (
+                        "订单编号,物流单号,物流公司\n"
+                        "5113837045333047045,SF5190159317180,顺丰速运\n"
+                    ).encode("utf-8"),
+                },
+            ],
+            "logistics": [{
+                "tracking": "SF5190159317180",
+                "carrier": "顺丰",
+                "amount": 15,
+                "source": "顺丰五月账单",
+            }],
+            "sku_set": set(),
+        }
+        cost_map = {"PK02-S2": {"unit_cost": 10, "source": "产品采购成本台", "name": "食人花2代"}}
+
+        result = settlement_engine.compute(raw, cost_map, "2026-07")
+
+        logs = [row for row in result["log_rows"] if row[3] == "5113837045333047045"]
+        self.assertEqual("SF5190159317180", logs[0][5])
+        self.assertEqual(15, logs[0][7])
+        self.assertFalse(any(row[4] == "物流成本" and row[5] == "5113837045333047045" for row in result["gap_rows"]))
+
 
 if __name__ == "__main__":
     unittest.main()

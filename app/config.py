@@ -162,3 +162,9 @@ FINANCE_CONFIRM_CHAT_ID = os.getenv(
     "oc_6b2da626d80eb6284bbe9dcf895030b9",
 )
 FINANCE_CONFIRM_CHAT_NAME = os.getenv("FINANCE_CONFIRM_CHAT_NAME", "财务部工作交流群")
+
+# 四个平台财务确认完成后，必须交给公司级毛利服务灌总表；成功后才允许归档。
+COMPANY_PROFIT_SERVICE_BASE_URL = os.getenv(
+    "COMPANY_PROFIT_SERVICE_BASE_URL", "https://finance-report-audit.zeabur.app"
+)
+COMPANY_PROFIT_SERVICE_TOKEN = os.getenv("COMPANY_PROFIT_SERVICE_TOKEN", "")
