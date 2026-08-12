@@ -49,6 +49,31 @@ class CostGapClassificationTests(unittest.TestCase):
         self.assertEqual("FL-DOCK-001", classified["procurement"][0]["erp_sku"])
         self.assertEqual("FUNLAB Dock", classified["procurement"][0]["name"])
 
+    def test_same_erp_sku_across_shops_keeps_matching_shop_context(self):
+        settlement = {
+            "gap_rows": [[
+                "P0", "抖音", "抖音纷岚", "2026-07", "采购成本",
+                "SHARED-SKU", "采购成本表未匹配或成本为0",
+                "毛利会虚高", "维护产品采购成本台后重跑",
+            ]],
+            "cost_rows": [
+                [
+                    "天猫", "天猫宝空", "2026-07", "tm-order-001", "SHARED-SKU",
+                    "天猫商品", 1, 0, 0, "成本缺失/为0",
+                ],
+                [
+                    "抖音", "抖音纷岚", "2026-07", "dy-order-001", "SHARED-SKU",
+                    "抖音商品", 1, 0, 0, "成本缺失/为0",
+                ],
+            ],
+        }
+
+        classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
+
+        item = classified["procurement"][0]
+        self.assertEqual("dy-order-001", item["order_id"])
+        self.assertEqual("抖音商品", item["name"])
+
     def test_order_detail_match_gap_routes_to_operations(self):
         settlement = {
             "gap_rows": [[

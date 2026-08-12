@@ -37,4 +37,4 @@
 
 ## 当前上线状态
 
-本地已实现并验证。等待 Frankie 查看样卡并明确确认后，才允许 push、Zeabur 部署及把生产环境 `COST_GAP_ALERT_FRANKIE_ONLY` 切为 `false`。
+Frankie 已确认两类样卡通过，允许发布、把生产环境 `COST_GAP_ALERT_FRANKIE_ONLY` 切为 `false`，并重跑 2026-07 初检。发布前代码审查又补上“同一 ERP SKU 跨平台/店铺时必须按平台 + 店铺 + 月份精确匹配成本上下文”的防串店规则。

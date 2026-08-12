@@ -131,7 +131,12 @@ def classify_settlement_cost_gaps(
             name = _text(cost_row[5]) if len(cost_row) > 5 else ""
             source = _text(cost_row[9]) if len(cost_row) > 9 else ""
         elif any(marker in haystack for marker in PROCUREMENT_PROBLEM_MARKERS):
-            matches = [row for row in (by_sku.get(obj.upper()) or []) if _has_zero_unit_cost(row)]
+            matches = [
+                cost_row for cost_row in (by_sku.get(obj.upper()) or [])
+                if _has_zero_unit_cost(cost_row)
+                and len(cost_row) >= 3
+                and tuple(map(_text, cost_row[:3])) == (platform, shop, month)
+            ]
             if matches:
                 route = "procurement"
                 object_type = "ERP SKU"
