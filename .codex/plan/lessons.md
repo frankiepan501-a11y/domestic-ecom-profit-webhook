@@ -26,3 +26,11 @@
 - [x] Contains no API keys, passwords, tokens, cookies, private auth blobs, or raw customer secrets.
 - [x] Contains no unnecessary raw transcript.
 - [x] Durable enough to help future tasks.
+
+## 2026-08-12 新增教训
+
+| Symptom | Cause | Prevention | Persisted to |
+|---|---|---|---|
+| 错误转去登录抖店 | 把“修识别规则”误解为“去平台重新取数” | 先锁定数据源和交接界面；国内毛利默认只读运营附件 | README、handoff、memory candidate |
+| 首次静默重跑误判没有历史卡 | 飞书 search 返回富文本数组，代码用 `str()` 比较 action/target/result | 审计字段统一走 `ledger.extract_text()`；新增真实字段形状测试 | code + test |
+| 长请求连接在 119 秒断开 | 网关连接寿命短于业务处理 | 不盲目重试；先读运行台/审计台确认是否完成 | progress + production evidence |

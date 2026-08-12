@@ -19,3 +19,12 @@
 - App/bot/credential namespace: 聪哥分身3号发送群卡及 @。
 - Source of truth: 2026-07 新报表“缺口清单” + 用户最新责任口径。
 - Write permissions: 用户已明确授权群内补发；代码与部署按当前修复执行。
+
+## 2026-08-12 P0 整改追加决策
+
+| Decision | Rationale | Confirmed by | Impact |
+|---|---|---|---|
+| 国内毛利只能读取运营上传附件，不登录抖店或其他平台后台取数 | 用户明确指出原流程不需要 AI 登录平台 | user correction | 浏览器分支停止；README/交接/候选记忆固定边界 |
+| 静默重跑只 PATCH 原卡；找不到原卡或 PATCH 不全时失败关闭，不补发 | 防止重复卡片和通知风暴 | user + screenshot P0 | `missing/failed` 任一非零即返回失败 |
+| 宝空结算资料按 6 个表头字段判定，不能用“结算单”文件名猜 | 现有文件实际是涉税报送，无法订单级核算 | uploaded attachment evidence | 只留一条精确补件说明 |
+| 财务回调以公司运行台“已灌总表 + 已归档”为最终证明 | HTTP 200 不等于总表已写入 | workflow contract | 未达双终态不得归档国内报表 |

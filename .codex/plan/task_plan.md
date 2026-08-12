@@ -1,68 +1,51 @@
-# Task Plan: 国内电商毛利缺口统一归运营
+# Task Plan: 2026-07 国内电商毛利 P0 整改与静默初检
 
 ## Goal
 
-把 2026-07 遗漏的天猫物流与抖音资料缺口补发给赵伟俊，并让后续订单、采购成本、物流成本、平台资料缺口统一由国内电商运营闭环。
+把国内电商毛利工作流恢复为“运营上传官方导出附件 → AI识别/初检/计算 → 原卡闭环 → 无 P0 才给财务终审”，并完成 2026-07 生产止血。
 
 ## Scope
 
-- In scope: 飞书群补充通知、缺口分流逻辑、运营卡片文案、自动触发类别、测试、生产发布与验证。
-- Out of scope: 修改本期报表金额、替运营补上传文件、改采购成本或物流成本数据。
-- Systems/data touched: 国内毛利代码库、飞书国内电商群、飞书审计台账、Zeabur 服务。
+- In scope: 附件识别、缺口台同步、原缺口卡更新、旧卡停用、财务卡 P0 硬闸、公司总毛利汇总后归档、生产部署与只读回核。
+- Out of scope: AI 登录抖店取数、代运营下载资料、补写业务数据、生成新的 7 月正式报表。
+- Systems/data touched: 国内毛利代码库、Zeabur 国内毛利服务、飞书运行台/缺口台/审计台、既有飞书卡片。
 - Risk level: high
 
-## Clarified Requirements
+## Confirmed Requirements
 
 | Requirement | Source | Status |
 |---|---|---|
-| 订单、采购成本、物流成本问题均由国内电商运营补充 | user confirmed | confirmed |
-| 补发天猫物流成本、抖音宝空/纷岚资料缺口给赵伟俊 | user confirmed | sent and verified |
-| 后续缺口卡统一发国内电商群并按岗位 @ | prior user confirmed | implemented |
-| 无审批/无回调的信息卡不再反复发 Frankie 私聊样卡 | user corrected | implemented |
-
-## Open Questions
-
-| Question | Why it matters | Blocking? | Answer |
-|---|---|---|---|
-| 无 | 用户已明确生产发送与责任口径 | no | - |
-
-## Assumptions
-
-| Assumption | Confidence | How to verify |
-|---|---|---|
-| 当前岗位人员仍为赵伟俊 | high | 发送前实时按职务解析并核对姓名 |
-| 报表缺口清单是本次缺口数量的准确信息源 | high | 只读读取 2026-07 新报表缺口清单 |
+| 数据源固定为运营上传的平台官方导出附件，AI不登录抖店 | user correction | implemented |
+| 16 张旧财务卡全部标记“本卡无效，请勿操作” | user confirmed | completed: 16/16 |
+| 一个月×渠道×平台只允许一个有效报表版本；旧按钮拒绝 | screenshot P0 + user | implemented |
+| 有 P0 时禁止发/点财务终审卡 | screenshot P0 + user | implemented |
+| 财务通过后先灌公司总毛利表，成功才归档 | screenshot P0 + user | implemented |
+| 使用现有附件静默重跑，只更新原缺口卡，不新增重复卡 | user confirmed | completed |
+| 宝空结算资料不足时只给赵伟俊一条精确补件说明 | user confirmed | completed |
 
 ## Acceptance Criteria
 
-- [x] 群补充卡包含天猫 105 行/89 个对象及抖音两店缺口，并真实 @ 赵伟俊。
-- [x] 4 类国内毛利 P0 缺口全部进入 operations，procurement 保持为空。
-- [x] 全量测试通过。
-- [x] 生产版本与提交一致；健康检查通过。
-- [x] 项目修复记录、计划与候选教训完成。
-
-## Phases
-
-| Phase | Status | Verification |
-|---|---|---|
-| 1. Discovery | completed | 报表只读统计 + 原卡核对 |
-| 2. Plan | completed | 用户责任口径已明确 |
-| 3. Execute | completed | 补充卡已发；代码和文档已修改 |
-| 4. Verify | completed | 36 项测试、回放、精确撤回、部署和健康检查通过 |
-| 5. Handoff | completed | 修复记录、计划与候选教训已更新 |
+- [x] 57 项自动测试、编译检查、差异检查通过。
+- [x] 生产运行提交 `16608f5`，健康检查 v0.4.0。
+- [x] 16 张旧财务卡原位停用，失败 0；当前四个平台发送槽位已清空。
+- [x] 现有附件静默重跑成功；新报表 0、新卡 0。
+- [x] 8 张历史缺口卡收敛为 1 张有效 + 7 张无效；缺失 0、失败 0。
+- [x] 当前 P0=2：抖音宝空结算表头不足、小红书纷岚一单缺快递单号。
+- [x] 原有效卡真实 @ 赵伟俊，包含宝空缺少的 6 个字段和“不要重复上传涉税报送明细”。
+- [x] 公司总表鉴权变量单变量新增，现有环境变量 58→59，无全量覆盖。
 
 ## Current State
 
-- Current phase: 5. Handoff（已完成）
-- Last completed action: v0.3.4 已发布，Zeabur 精确运行提交 `e171de8`，健康检查通过且 `cost_gap_alert_frankie_only=false`。
-- Next concrete action: 无需重跑 2026-07 初检；等待赵伟俊按群卡补件后再走正常“提交初检”。
+- Current phase: Handoff（已完成）
+- Last completed action: 回读有效原卡 `om_x100b68f5d05d24b0c34011561680f50`，确认内容、@、更新状态和无新增发送均通过。
+- Next concrete action: 等赵伟俊补 ①抖音宝空订单级结算明细 ②小红书纷岚订单 `P799684994323319861` 的快递单号，再由运营点击“提交初检”。
 
-## Files/Resources
+## Evidence
 
-| Path or URL | Purpose |
+| Evidence | Result |
 |---|---|
-| `app/cost_gap_alert.py` | 缺口责任分流与发送 |
-| `app/cards.py` | 运营缺口卡文案 |
-| `app/task_runner.py` | 自动触发类别 |
-| `tests/test_cost_gap_routing.py` | 分流与收件路由测试 |
-| `docs/cost_gap_responsibility_routing_2026-08-11.md` | 项目修复记录 |
+| Zeabur deployment | `16608f53...` RUNNING |
+| `/cards/invalidate-finance` | invalidated=16, failed=0 |
+| `/profit/rerun-initial-check` | ok=true, open_p0=2, created_report=false, sent_new_card=false |
+| `cost_gap_card_refresh` audit | patched, active=1, invalidated=7, missing=0, failed=0 |
+| 发卡审计 | refresh 后 `cost_gap_alert_v2` 新增数=0 |
