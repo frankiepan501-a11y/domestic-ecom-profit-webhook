@@ -32,6 +32,20 @@ class CostGapClassificationTests(unittest.TestCase):
             cost_gap_alert._existing_group_message_ids(audits),
         )
 
+    def test_existing_gap_cards_accept_feishu_rich_text_field_shape(self):
+        audits = [{"fields": {
+            "action": [{"text": "cost_gap_alert_v2"}],
+            "target_id": [{"text": "operations"}],
+            "result": [{"text": "sent"}],
+            "created_at": 1786517994700,
+            "after_json": [{"text": '{"message_ids":["om_current"],"channel":"group"}'}],
+        }}]
+
+        self.assertEqual(
+            ["om_current"],
+            cost_gap_alert._existing_group_message_ids(audits),
+        )
+
     def test_order_without_merchant_code_routes_to_operations(self):
         settlement = {
             "gap_rows": [[

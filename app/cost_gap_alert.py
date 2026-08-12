@@ -300,9 +300,9 @@ def _existing_group_message_ids(audits: list[dict[str, Any]]) -> list[str]:
     for rec in audits:
         fields = rec.get("fields") or {}
         if (
-            _text(fields.get("action")) != "cost_gap_alert_v2"
-            or _text(fields.get("target_id")) != "operations"
-            or _text(fields.get("result")) != "sent"
+            ledger.extract_text(fields.get("action")) != "cost_gap_alert_v2"
+            or ledger.extract_text(fields.get("target_id")) != "operations"
+            or ledger.extract_text(fields.get("result")) != "sent"
         ):
             continue
         try:
