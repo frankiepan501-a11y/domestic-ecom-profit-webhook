@@ -117,6 +117,8 @@ P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 A/B 已通�
 
 建议下一步：
 
+- 2026-08-12 生产修复已完成：commit `8ea180624be55e4b056acb487b007fe4ed97cc57`，Zeabur deployment `6a7beee8dae81554f1f879ef` RUNNING，`/health version=0.3.3`。2026-07 新报表为 `SeKVscsnJhnU5ptFk0FcknN6noc`；原运营缺口卡和四张财务卡均原位更新，未重复发送。旧报表 `Ma0sspy5ZheEP1tZeqBcw9R0neb` 已标“已作废”。当前仍有计算层物流/订单查询/资料 P0，财务决定保持待确认。
+
 - P0：后续正式派送调用 `/cards/finance-confirm?year_month=2026-06&frankie_only=false` 时，只发到「财务部工作交流群」。如更换群，先更新 `FINANCE_CONFIRM_CHAT_ID` 并确认 App3 已在群内。
 - P0：资料提交卡/缺口卡固定发「国内电商平台沟通群」。如更换群，先更新 `OPS_CARD_CHAT_ID`，并确认 App3 和当前运营岗位人员都在群内。
 - P0：财务确认后自动写输出报表台、归档状态和汇总索引；保留重复点击幂等验证。
