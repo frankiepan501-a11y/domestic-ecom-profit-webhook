@@ -33,7 +33,7 @@
 | OPS_CARD_CHAT_ID | oc_3240df569ced84c1541b6f7cd217d88f | 运营资料提交卡和缺口卡正式派送群；卡内实时 @ 当前国内平台运营专员 |
 | OPS_CARD_CHAT_NAME | 国内电商平台沟通群 | 审计日志和接口回执中的群名 |
 | OPS_CARD_FRANKIE_ONLY | false | `true` 时运营卡只发 Frankie 测试私聊；生产保持 `false` |
-| COST_GAP_ALERT_FRANKIE_ONLY | true | 国内电商毛利资料/成本缺口卡上线闸；Frankie 确认样卡前保持 `true`，确认后生产显式设为 `false` |
+| COST_GAP_ALERT_FRANKIE_ONLY | false | 仅用于显式人工排查；日常生产保持 `false`，资料/成本缺口卡直接发国内电商群 |
 | FINANCE_CONFIRM_CHAT_ID | oc_6b2da626d80eb6284bbe9dcf895030b9 | 财务确认卡正式派送群；Frankie-only 测试不走该群 |
 | DOMESTIC_ECOM_REPORT_FOLDER_TOKEN | YmLtfYSA2lLIqBdEr6kcxCYLnvy | 国内电商毛利报表云盘归档文件夹：`毛利报表总目录 / 02 国内电商 / 国内电商毛利表` |
 | DOMESTIC_ECOM_REPORT_FOLDER_PATH | 飞书云盘 / 毛利报表总目录 / 02 国内电商 / 国内电商毛利表 | 财务卡片和通知展示的云盘导航路径 |
@@ -48,9 +48,9 @@
 - 对象类型在卡内明确区分店铺、订单号、运单号、ERP SKU 和待核实对象，不能把订单号或运单号显示成 ERP SKU。
 - 结算月包含跨月订单时，运营卡按结算文件中的最早下单月份提示订单明细补导范围；源文件没有下单日期时，保守回溯结算月前 3 个月并给出明确起止日期。
 - 每条缺口明细都直接写平台/店铺，避免多平台同卡时把订单或 ERP SKU 归错店铺。
-- 单路缺口超过 25 条时自动分页；Frankie 样卡与生产派送使用独立防重复记录，样卡不会挡住正式发送。
+- 单路缺口超过 25 条时自动分页；卡片发布前做结构自检和发送后回读，不重复给 Frankie 私聊发送格式样卡。
 - 群发送失败不记为已发送，后续可重试；防重复记录查询临时失败时，只跳过当前这一张卡并记录告警。
-- 生产切换前必须保持 `COST_GAP_ALERT_FRANKIE_ONLY=true`，先由 Frankie 验证统一运营样卡。
+- 只有带输入、审批、回调或会改变业务状态的交互卡，才需要单独的人审测试；本缺口卡只有说明和上传页链接，自动自检通过后直接走国内电商群。
 
 ## v0.1 限制
 

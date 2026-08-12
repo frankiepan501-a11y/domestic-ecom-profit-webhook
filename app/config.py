@@ -28,9 +28,10 @@ CARD_WORKFLOW_ENABLED = os.getenv("CARD_WORKFLOW_ENABLED", "false").lower() == "
 CARD_WORKFLOW_FRANKIE_ONLY = os.getenv("CARD_WORKFLOW_FRANKIE_ONLY", "false").lower() == "true"
 # 运营资料提交卡/缺口卡使用独立测试开关，避免财务卡测试配置把运营卡误发到 Frankie 私聊。
 OPS_CARD_FRANKIE_ONLY = os.getenv("OPS_CARD_FRANKIE_ONLY", "false").lower() == "true"
-# 新成本缺口分流卡的独立上线闸。默认只发 Frankie；确认样卡后生产环境显式设为 false。
+# 成本缺口卡是无审批/无回调的信息卡，生产默认直接发国内电商群。
+# 该开关仅保留给显式人工排查；不得把日常业务卡默认改发 Frankie 私聊。
 COST_GAP_ALERT_FRANKIE_ONLY = os.getenv(
-    "COST_GAP_ALERT_FRANKIE_ONLY", "true"
+    "COST_GAP_ALERT_FRANKIE_ONLY", "false"
 ).lower() == "true"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://domestic-ecom-profit.zeabur.app")
 

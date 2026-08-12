@@ -17,7 +17,8 @@
 |---|---|---|
 | 订单、采购成本、物流成本问题均由国内电商运营补充 | user confirmed | confirmed |
 | 补发天猫物流成本、抖音宝空/纷岚资料缺口给赵伟俊 | user confirmed | sent and verified |
-| 后续缺口卡统一发国内电商群并按岗位 @ | prior user confirmed | implementing |
+| 后续缺口卡统一发国内电商群并按岗位 @ | prior user confirmed | implemented |
+| 无审批/无回调的信息卡不再反复发 Frankie 私聊样卡 | user corrected | implemented |
 
 ## Open Questions
 
@@ -35,9 +36,10 @@
 ## Acceptance Criteria
 
 - [x] 群补充卡包含天猫 105 行/89 个对象及抖音两店缺口，并真实 @ 赵伟俊。
-- [ ] 4 类国内毛利 P0 缺口全部进入 operations，procurement 保持为空。
-- [ ] 全量测试通过；生产版本与提交一致；健康检查通过。
-- [ ] 项目修复记录、计划与候选教训完成。
+- [x] 4 类国内毛利 P0 缺口全部进入 operations，procurement 保持为空。
+- [x] 全量测试通过。
+- [ ] 生产版本与提交一致；健康检查通过。
+- [x] 项目修复记录、计划与候选教训完成。
 
 ## Phases
 
@@ -52,8 +54,8 @@
 ## Current State
 
 - Current phase: 4. Verify
-- Last completed action: 36 项测试、7 月回放、代码双轴复审和最终样卡回读通过。
-- Next concrete action: 等 Frankie 确认最终样卡后提交并发布 v0.3.4。
+- Last completed action: 两张误发私聊样卡已精确撤回，群内正式通知保留；默认路由已改为直接发国内电商群。
+- Next concrete action: 提交、发布 v0.3.4，并核对 Zeabur 版本与健康状态。
 
 ## Files/Resources
 

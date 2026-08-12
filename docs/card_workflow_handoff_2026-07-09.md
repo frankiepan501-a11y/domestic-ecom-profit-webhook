@@ -50,7 +50,7 @@ Ledger Base：`IKyGb1jydaZW7msBzAicViiWngg`
 
 ## 测试纪律
 
-卡片工作流上线或改派送对象时，先进入 Frankie-only 测试模式。禁止在 Frankie 完整走通“收到卡片 -> 上传/点击 -> callback 写 ledger -> 原卡 PATCH”的链路前，把 `/tasks/remind-monthly` 或等价生产入口直接发给运营负责人。
+带输入、审批、回调或状态变更的卡片上线或改派送对象时，先进入 Frankie-only 测试模式。禁止在 Frankie 完整走通“收到卡片 -> 上传/点击 -> callback 写 ledger -> 原卡 PATCH”的链路前，把 `/tasks/remind-monthly` 或等价生产入口直接发给运营负责人。只有说明和 URL、无输入/审批/回调/状态变更的纯信息卡，改用自动结构自检 + 发送后回读，直接发真实业务群，不重复给 Frankie 私聊发格式样卡。
 
 如果需要验证运营卡样式，使用 `/cards/test?send=true` 或 `/cards/test-samples?send=true` 发给 Frankie；不要用 `/tasks/remind-monthly?force=true` 直接打运营，除非 `OPS_CARD_FRANKIE_ONLY=true` 已生效。
 
@@ -108,7 +108,7 @@ n8n Event Hub `YjTXaoWAcy89xZpT` 新增 `domestic_profit_*` namespace：
 - 2026-07-10 生产派送路由更新：Frankie 授权正式派送后，曾执行过一次 `frankie_only=false` 并按财务成员逐个私聊发卡；用户随后明确纠正“以后发去财务群就好，不需要每个人都发一张”。当前代码已切换为生产只发「财务部工作交流群」单卡，四个平台共四张群卡；已发出的个人卡不再作为后续路由模板。
 - 2026-07-13 财务点旧个人确认卡时飞书前端弹 `code: 200341`：n8n Event Hub 已在 1ms 内 `Respond OK`，国内电商 callback 后台也返回 `ok=true` 且 `patched_original_card=true`，Base run 已写成 `已归档/四个平台毛利确认卡均已完成`。根因是卡片 action 的同步 HTTP 回包仍是普通事件格式 `{"code":0}`，飞书客户端可能不把它当作合格卡片交互响应。已将 Event Hub `Respond OK` 节点改为：当 `event_type=card.action.trigger` 时返回 `{"toast":{"type":"info","content":"已收到，系统处理中"}}`，普通消息事件仍返回 `{"code":0}`。验证：手工 POST 假 `card.action.trigger/noop_test` 到 `/webhook/feishu-event-hub` 返回 200 和 toast，不写 Base。注意：前端报错不等于后台未写，排查时先查 `审计日志台`/`输出报表台`/`报表运行台`。
 - 2026-08-11 运营卡路由修复：资料提交卡和 P0 缺口卡统一发「国内电商平台沟通群」单卡，不再按运营人员逐个私聊。先用聪哥1号按飞书人事实时职务严格查人，再用 `union_id` 映射到聪哥3号 namespace 的 `open_id`，卡内用 `<at id=...></at>` 真正 @；未命中岗位、人员不在群或跨 App 映射失败时停止发送，不以整个部门兜底。历史 2026-07 缺口卡的 Frankie 私聊 `message_id` 会在一次受控 `force_resend` 后保留并追加群卡 message_id，便于追溯且避免后续重复发送。
-- 2026-08-11 成本缺口责任分流修复：旧 `_alert_cost_gap` 会把完整缺口行压缩成“SKU/对象”，导致订单号被误当 ERP SKU 并统一发采购。新路径保留平台、店铺、对象类型、订单号/ERP SKU、商品、问题、影响和建议动作：订单未匹配/商家编码缺失归运营群，ERP SKU 已识别但成本为 0 才归采购专员，未知类型留给系统排查。天猫交易货款会补充下单/结算时间并按最早下单月份计算订单明细导出范围。独立上线闸 `COST_GAP_ALERT_FRANKIE_ONLY` 默认 `true`；2026-07 两类 Frankie-only 样卡已发送并通过结构/回读自检，尚未 push/deploy 或切生产。
+- 2026-08-11 成本缺口责任分流修复（历史方案，已被 2026-08-12 新口径覆盖）：旧 `_alert_cost_gap` 会把完整缺口行压缩成“SKU/对象”，导致订单号被误当 ERP SKU 并统一发采购。该版曾按运营/采购/待判断三路分流并设置 Frankie-only 上线闸；后续不再按此责任路由执行。
 - 2026-08-12 2026-07 初检失败根因确认：聪哥1号对固定归档目录 `YmLtfYSA2lLIqBdEr6kcxCYLnvy` 的访问返回 `1061004 forbidden`，创建表格接口的真实错误又被 `writer.create_report_spreadsheet` 直接索引 `data` 覆盖成 `KeyError: 'data'`。已由 Frankie 用户身份给应用 `cli_a9f6ae86fce8dbd8` 恢复目录 `full_access`，并验证应用重新可列目录；代码同时改为保留飞书 `code/msg`，后续权限异常会给出可执行原因，不再只显示 KeyError。
 
 ## 剩余风险和下一步
@@ -118,7 +118,7 @@ P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 A/B 已通�
 建议下一步：
 
 - 2026-08-12 生产修复已完成：commit `8ea180624be55e4b056acb487b007fe4ed97cc57`，Zeabur deployment `6a7beee8dae81554f1f879ef` RUNNING，`/health version=0.3.3`。2026-07 新报表为 `SeKVscsnJhnU5ptFk0FcknN6noc`；原运营缺口卡和四张财务卡均原位更新，未重复发送。旧报表 `Ma0sspy5ZheEP1tZeqBcw9R0neb` 已标“已作废”。当前仍有计算层物流/订单查询/资料 P0，财务决定保持待确认。
-- 2026-08-12 用户纠正责任口径：国内电商毛利的订单、采购成本、物流成本、平台资料缺口统一由国内电商运营闭环，采购不再直接收卡；本条覆盖 2026-08-11 “ERP SKU 成本为 0 归采购”的旧规则。天猫物流 105 行/89 个对象及抖音两店资料缺口已汇总补发群并 @ 赵伟俊；新版自动卡完成 36 项测试和 Frankie-only 最终样卡，待确认后发布 v0.3.4。详见 `docs/cost_gap_responsibility_routing_2026-08-11.md`。
+- 2026-08-12 用户纠正责任口径：国内电商毛利的订单、采购成本、物流成本、平台资料缺口统一由国内电商运营闭环，采购不再直接收卡；本条覆盖 2026-08-11 “ERP SKU 成本为 0 归采购”的旧规则。天猫物流 105 行/89 个对象及抖音两店资料缺口已汇总补发群并 @ 赵伟俊。用户进一步纠正：本类无审批/无回调信息卡不应反复发 Frankie 样卡，两张误发私聊样卡已撤回；以后结构自检通过后直接发国内电商群。详见 `docs/cost_gap_responsibility_routing_2026-08-11.md`。
 
 - P0：后续正式派送调用 `/cards/finance-confirm?year_month=2026-06&frankie_only=false` 时，只发到「财务部工作交流群」。如更换群，先更新 `FINANCE_CONFIRM_CHAT_ID` 并确认 App3 已在群内。
 - P0：资料提交卡/缺口卡固定发「国内电商平台沟通群」。如更换群，先更新 `OPS_CARD_CHAT_ID`，并确认 App3 和当前运营岗位人员都在群内。
