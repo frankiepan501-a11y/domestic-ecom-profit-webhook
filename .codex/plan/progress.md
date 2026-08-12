@@ -27,18 +27,19 @@
 | 全量测试 | unittest discover | 全部通过 | 36/36 通过 | passed |
 | 2026-07 回放 | 报表缺口清单 | 四类缺口全部归运营 | 运营 102 / 采购 0 / 财务待判断 0 | passed |
 | 双轴代码复审 | standards + spec | 无剩余问题 | 无剩余问题 | passed |
-| 生产部署 | Zeabur | exact commit RUNNING | 未执行 | pending |
+| 生产部署 | Zeabur | exact commit RUNNING | `e171de8` / deployment `6a7bfaf1dae81554f1f87bc3` RUNNING | passed |
+| 生产健康检查 | `/health` | v0.3.4、责任路由开启、Frankie-only 关闭 | 全部符合 | passed |
 
 ## Remaining Work
 
 | Priority | Item | Blocker | Suggested next step |
 |---|---|---|---|
-| P0 | 提交、发布、健康检查 | 无 | push + Zeabur 验证 |
+| 无 | 当前清单已清空 | - | 等运营补件后走正常初检 |
 
 ## Handoff Snapshot
 
 - Done: 补发实际群卡；分流代码、测试、文档和候选教训已完成。
 - Verified: 群卡回读、36 项测试、7 月回放、双轴复审、两张私聊样卡已撤回且群卡未受影响。
-- Not done: 提交、发布和生产健康检查。
+- Not done: 无；当前清单已清空。
 - Do not retry: 不再向采购岗位发送国内电商毛利采购成本缺口卡。
-- Next step: 发布 v0.3.4；不要再向 Frankie 私聊发送本类格式样卡。
+- Next step: 等赵伟俊补件后走正常“提交初检”；不要再向 Frankie 私聊发送本类格式样卡。

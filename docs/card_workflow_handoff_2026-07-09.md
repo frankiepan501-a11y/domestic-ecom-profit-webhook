@@ -119,6 +119,7 @@ P0 卡片上传与结算文件驱动试算已可用。当前 2026-06 A/B 已通�
 
 - 2026-08-12 生产修复已完成：commit `8ea180624be55e4b056acb487b007fe4ed97cc57`，Zeabur deployment `6a7beee8dae81554f1f879ef` RUNNING，`/health version=0.3.3`。2026-07 新报表为 `SeKVscsnJhnU5ptFk0FcknN6noc`；原运营缺口卡和四张财务卡均原位更新，未重复发送。旧报表 `Ma0sspy5ZheEP1tZeqBcw9R0neb` 已标“已作废”。当前仍有计算层物流/订单查询/资料 P0，财务决定保持待确认。
 - 2026-08-12 用户纠正责任口径：国内电商毛利的订单、采购成本、物流成本、平台资料缺口统一由国内电商运营闭环，采购不再直接收卡；本条覆盖 2026-08-11 “ERP SKU 成本为 0 归采购”的旧规则。天猫物流 105 行/89 个对象及抖音两店资料缺口已汇总补发群并 @ 赵伟俊。用户进一步纠正：本类无审批/无回调信息卡不应反复发 Frankie 样卡，两张误发私聊样卡已撤回；以后结构自检通过后直接发国内电商群。详见 `docs/cost_gap_responsibility_routing_2026-08-11.md`。
+- 2026-08-12 v0.3.4 已上线：提交 `e171de8` / Zeabur deployment `6a7bfaf1dae81554f1f87bc3` RUNNING，健康检查确认成本缺口路由开启且 Frankie-only 关闭。本次未再次强制初检，避免重复发 102 个缺口对象。
 
 - P0：后续正式派送调用 `/cards/finance-confirm?year_month=2026-06&frankie_only=false` 时，只发到「财务部工作交流群」。如更换群，先更新 `FINANCE_CONFIRM_CHAT_ID` 并确认 App3 已在群内。
 - P0：资料提交卡/缺口卡固定发「国内电商平台沟通群」。如更换群，先更新 `OPS_CARD_CHAT_ID`，并确认 App3 和当前运营岗位人员都在群内。

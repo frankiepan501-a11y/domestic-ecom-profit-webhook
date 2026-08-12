@@ -70,3 +70,5 @@ Frankie 已确认两类样卡通过，允许发布、把生产环境 `COST_GAP_A
 - 系统结构自检、发送后回读和双轴代码复审均通过；此卡无输入、审批或回调，不需要 Frankie 充当测试收件人。
 - 曾误发到 Frankie 私聊的两张格式样卡 `om_x100b688b39ac38acb04019e79729434`、`om_x100b688bc75028a4b22c3fe2408694a` 已于用户纠正后精确撤回；群内正式补件卡 `om_x100b688b1894b0a0b2205629e8ec995` 保留且回读正常。
 - 以后本类信息卡默认直接发国内电商群并按岗位 @；只有带输入、审批、回调或会改变业务状态的交互卡才另做人审测试。
+- v0.3.4 已发布：代码提交 `e171de8`，Zeabur deployment `6a7bfaf1dae81554f1f87bc3` 为 `RUNNING`；`/health` 返回 `version=0.3.4`、`cost_gap_responsibility_routing=true`、`cost_gap_alert_frankie_only=false`。
+- 本次只发布未来路由，没有再次强制运行 2026-07 初检，避免群里重复出现 102 个自动缺口对象。

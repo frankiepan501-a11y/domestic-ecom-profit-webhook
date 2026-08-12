@@ -38,7 +38,7 @@
 - [x] 群补充卡包含天猫 105 行/89 个对象及抖音两店缺口，并真实 @ 赵伟俊。
 - [x] 4 类国内毛利 P0 缺口全部进入 operations，procurement 保持为空。
 - [x] 全量测试通过。
-- [ ] 生产版本与提交一致；健康检查通过。
+- [x] 生产版本与提交一致；健康检查通过。
 - [x] 项目修复记录、计划与候选教训完成。
 
 ## Phases
@@ -48,14 +48,14 @@
 | 1. Discovery | completed | 报表只读统计 + 原卡核对 |
 | 2. Plan | completed | 用户责任口径已明确 |
 | 3. Execute | completed | 补充卡已发；代码和文档已修改 |
-| 4. Verify | in_progress | 测试与回放通过；待发布和健康检查 |
-| 5. Handoff | pending | Done/todos/next step |
+| 4. Verify | completed | 36 项测试、回放、精确撤回、部署和健康检查通过 |
+| 5. Handoff | completed | 修复记录、计划与候选教训已更新 |
 
 ## Current State
 
-- Current phase: 4. Verify
-- Last completed action: 两张误发私聊样卡已精确撤回，群内正式通知保留；默认路由已改为直接发国内电商群。
-- Next concrete action: 提交、发布 v0.3.4，并核对 Zeabur 版本与健康状态。
+- Current phase: 5. Handoff（已完成）
+- Last completed action: v0.3.4 已发布，Zeabur 精确运行提交 `e171de8`，健康检查通过且 `cost_gap_alert_frankie_only=false`。
+- Next concrete action: 无需重跑 2026-07 初检；等待赵伟俊按群卡补件后再走正常“提交初检”。
 
 ## Files/Resources
 
