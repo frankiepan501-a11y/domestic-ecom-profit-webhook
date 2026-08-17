@@ -392,6 +392,39 @@ class SettlementReport:
         row["tail"] = float(row["tail"]) + tail
         row["other"] = float(row["other"]) + other
 
+    def allocate_public_product_cost(self, platform: str, shop: str, field: str,
+                                     amount: float) -> None:
+        """Allocate an untraceable monthly cost by positive SKU net sales, to cents."""
+        if field not in {"platform_fee", "ad_fee", "other"}:
+            raise ValueError(f"unsupported public product cost field: {field}")
+        target_cents = int(round(mny(amount) * 100))
+        if target_cents == 0:
+            return
+        eligible: list[tuple[tuple[str, str, str, str], float]] = []
+        for key, row in self.product.items():
+            if key[0:2] != (platform, shop):
+                continue
+            net_sales = mny(float(row["sales"]) - float(row["refund"]))
+            if net_sales > 0:
+                eligible.append((key, net_sales))
+        if not eligible:
+            return
+
+        total_net_sales = sum(net_sales for _, net_sales in eligible)
+        remainder_key = max(eligible, key=lambda item: (item[1], item[0]))[0]
+        allocations: dict[tuple[str, str, str, str], int] = {}
+        allocated_cents = 0
+        for key, net_sales in eligible:
+            if key == remainder_key:
+                continue
+            cents = int(round(target_cents * net_sales / total_net_sales))
+            allocations[key] = cents
+            allocated_cents += cents
+        allocations[remainder_key] = target_cents - allocated_cents
+        for key, cents in allocations.items():
+            row = self.product[key]
+            row[field] = float(row[field]) + cents / 100
+
     def add_monthly(self, platform: str, shop: str, orders: int, qty: float, sales: float,
                     refund: float, platform_fee: float, ad_fee: float, purchase: float,
                     tail: float, other: float, status: str) -> None:
@@ -866,7 +899,6 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                 note = ""
             report.add_source("抖音", shop, "广告说明", fname, "", "已读取", norm(note))
 
-    other_base = sum(money(p(r, "收入合计")) for r in settle_rows if norm(p(r, "结算单类型")) == "已结算")
     sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = ad_fee = payback = 0.0
     counted_waybills: set[str] = set()
     recorded_sku_confirmations: set[tuple[str, str]] = set()
@@ -959,11 +991,11 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                                    "尾程费用缺失", "补后续账单或核实运单/API权限后重跑")
         if is_income or is_refund:
             net = income if is_income else -abs(income if income else settle)
-            line_other = other_fee * income / other_base if is_income and other_base else 0.0
             report.add_product("抖音", shop, sku, name, qty if is_income else 0.0,
                                abs(qty) if is_refund else 0.0, income if is_income else 0.0,
                                abs(net) if is_refund else 0.0, pf + offsite, 0.0, purchase,
-                               tail_for_order, line_other)
+                               tail_for_order, 0.0)
+    report.allocate_public_product_cost("抖音", shop, "other", other_fee)
     status = "可作为自动化对比基准" if report.gap_count("抖音", shop, "P0") == 0 else "存在P0缺口-待补后重跑"
     report.add_monthly("抖音", shop, len(settle_rows), qty_total, sales_total, refund_total,
                        platform_fee, ad_fee, purchase_total, tail_total, other_fee, status)

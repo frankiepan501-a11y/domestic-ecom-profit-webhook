@@ -234,6 +234,51 @@ class SettlementRecognitionTests(unittest.TestCase):
         self.assertEqual("权益保险", rows[0]["fee_type"])
         self.assertEqual(-0.58, rows[0]["amount"])
 
+    def test_douyin_public_other_fee_uses_sku_net_sales_and_reconciles_cents(self):
+        settlement = (
+            "订单号,结算单类型,收入合计,结算金额,商品数量,商品ID,商品名称,平台服务费\n"
+            "order-a,已结算,100,100,1,product-a,商品A,0\n"
+            "order-a,退款,-20,-20,0.2,product-a,商品A,0\n"
+            "order-b,已结算,20,20,1,product-b,商品B,0\n"
+        ).encode("utf-8-sig")
+        orders = (
+            "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,快递信息\n"
+            "order-a,sub-a,商品A,product-a,SKU-A,1,SF-A-顺丰速运\n"
+            "order-b,sub-b,商品B,product-b,SKU-B,1,SF-B-顺丰速运\n"
+        ).encode("utf-8-sig")
+        fees = (
+            "动账时间,动账方向,动账金额,动账场景\n"
+            "2026-07-31 10:00:00,出账,-1.01,权益保险\n"
+        ).encode("utf-8-sig")
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音结算订单.csv", "buf": settlement},
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音宝空订单明细.csv", "buf": orders},
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音平台费用.csv", "buf": fees},
+            ],
+            "logistics": [
+                {"tracking": "SF-A", "carrier": "顺丰", "amount": 0, "source": "账单"},
+                {"tracking": "SF-B", "carrier": "顺丰", "amount": 0, "source": "账单"},
+            ],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {
+                "SKU-A": {"unit_cost": 10, "source": "产品采购成本台", "name": "商品A"},
+                "SKU-B": {"unit_cost": 10, "source": "产品采购成本台", "name": "商品B"},
+            },
+            "2026-07",
+        )
+        rows = {
+            row[5]: row for row in result["product_rows"]
+            if row[0] == "抖音" and row[3] == "抖音宝空"
+        }
+
+        self.assertAlmostEqual(rows["SKU-A"][15], 0.81, places=2)
+        self.assertAlmostEqual(rows["SKU-B"][15], 0.20, places=2)
+        self.assertAlmostEqual(sum(row[15] for row in rows.values()), 1.01, places=2)
+
     def test_powkong_tax_reporting_export_yields_one_precise_settlement_request(self):
         uploaded = (
             "业务时间,报送场景,报送金额,业务单号,明细数据对应菜单名称,用户实付,技术服务费\n"

@@ -53,19 +53,22 @@ class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(expected, writer.HEADERS["产品毛利_月度"])
         self.assertEqual(expected, writer.HEADERS["产品毛利_季度"])
+        sheet_columns = {name: columns for name, _, columns in writer.SHEET_DEFS}
+        self.assertEqual(len(expected), sheet_columns["产品毛利_月度"])
+        self.assertEqual(len(expected), sheet_columns["产品毛利_季度"])
 
     def test_settlement_product_rows_match_unified_18_column_contract(self):
         report = settlement_engine.SettlementReport("2026-07")
         report.add_product(
-            "抖音", "抖音宝空", "PK02-S3", "食人花2代", 1, 0,
-            552, 0, 11.04, 0, 170.26, 26, 4.57,
+            "抖音", "抖音宝空", "PK02-S3", "食人花2代", 1, 0.1,
+            552, 52, 11.04, 0, 170.26, 26, 4.57,
         )
         rows = report.product_rows()
 
         self.assertEqual(18, len(settlement_engine.PRODUCT_HEADER))
         self.assertEqual(18, len(rows[0]))
-        self.assertAlmostEqual(rows[0][16], 340.13, places=2)
-        self.assertAlmostEqual(rows[0][17], 340.13 / 552, places=6)
+        self.assertAlmostEqual(rows[0][16], 288.13, places=2)
+        self.assertAlmostEqual(rows[0][17], 288.13 / (552 - 52), places=6)
 
 
 if __name__ == "__main__":

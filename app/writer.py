@@ -4,6 +4,7 @@ from . import feishu, config, settlement_engine
 
 
 # ===== sheets 定义 =====
+PRODUCT_SHEET_COLUMN_COUNT = len(settlement_engine.PRODUCT_HEADER)
 SHEET_DEFS = [
     ("00_导数说明", 200, 4),
     ("01_订单明细_导入", 5000, 22),
@@ -19,8 +20,8 @@ SHEET_DEFS = [
     ("11_店铺汇总看板", 200, 14),
     ("12_异常预警", 500, 9),
     ("月度毛利试算", 500, 20),
-    ("产品毛利_月度", 1000, 18),
-    ("产品毛利_季度", 1000, 18),
+    ("产品毛利_月度", 1000, PRODUCT_SHEET_COLUMN_COUNT),
+    ("产品毛利_季度", 1000, PRODUCT_SHEET_COLUMN_COUNT),
     ("SKU成本明细", 5000, 10),
     ("物流匹配明细", 5000, 12),
     ("费用明细汇总", 5000, 9),
