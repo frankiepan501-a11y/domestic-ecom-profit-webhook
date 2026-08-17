@@ -37,7 +37,7 @@ MONTHLY_HEADER = [
 PRODUCT_HEADER = [
     "国内电商平台名称", "运营人员", "国家", "站点", "月份", "MSKU", "中文名称", "销量",
     "退款数量", "销售额(RMB)", "退款(RMB)", "平台服务费(RMB)", "广告费(RMB)",
-    "采购成本(RMB)", "尾程费用(RMB)", "其他成本(RMB)", "毛利润(RMB)", "毛利率", "备注",
+    "采购成本(RMB)", "尾程费用(RMB)", "其他成本(RMB)", "毛利润(RMB)", "毛利率",
 ]
 COST_HEADER = [
     "平台", "店铺", "月份", "订单号", "ERP_SKU", "品名", "净成本数量", "单件采购成本",
@@ -421,7 +421,6 @@ class SettlementReport:
                 mny(r["refund_qty"]), mny(sales), mny(refund), mny(r["platform_fee"]),
                 mny(r["ad_fee"]), mny(r["purchase"]), mny(r["tail"]), mny(r["other"]),
                 mny(profit), pct(profit, net),
-                "平台/广告等不可直接归SKU费用按净销售额分摊；物流按运单拆分",
             ])
         return rows
 
