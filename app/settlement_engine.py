@@ -22,6 +22,12 @@ import xlrd
 
 COMPANY = "深圳奥迪尔"
 
+# 运营在国内电商平台沟通群确认的抖音商品ID → ERP SKU映射。
+# 仅在官方订单明细的商家编码为空时兜底；订单明细中已有编码时仍以官方导出为准。
+DOUYIN_CONFIRMED_PRODUCT_SKU = {
+    "3751006771863486516": "PK02-S3",  # 蔡宗佑确认，2026-08-17
+}
+
 MONTHLY_HEADER = [
     "月份", "平台", "店铺", "主体", "销售订单数", "销量", "销售额(RMB)", "退款(RMB)",
     "净销售额(RMB)", "平台费用(RMB)", "广告费(RMB)", "采购成本(RMB)", "尾程费用(RMB)",
@@ -864,6 +870,7 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
     other_base = sum(money(p(r, "收入合计")) for r in settle_rows if norm(p(r, "结算单类型")) == "已结算")
     sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = ad_fee = payback = 0.0
     counted_waybills: set[str] = set()
+    recorded_sku_confirmations: set[tuple[str, str]] = set()
     for r in settle_rows:
         order_id = norm(p(r, "订单号"))
         product_id = norm(p(r, "商品ID"))
@@ -889,6 +896,15 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         lines = pick_dy_lines(by_order_product, by_order, order_id, product_id)
         skus = sorted({norm(p(x, "商家编码")) for x in lines if norm(p(x, "商家编码"))})
         sku = skus[0] if skus else ""
+        if lines and not sku:
+            sku = DOUYIN_CONFIRMED_PRODUCT_SKU.get(product_id, "")
+            confirmation_key = (product_id, sku)
+            if sku and confirmation_key not in recorded_sku_confirmations:
+                recorded_sku_confirmations.add(confirmation_key)
+                report.add_source(
+                    "抖音", shop, "SKU映射确认", "国内电商平台沟通群确认", 1, "已确认",
+                    f"商品ID {product_id} → {sku}；订单明细商家编码为空时使用",
+                )
         name = norm(p(lines[0], "选购商品")) if lines else norm(p(r, "商品名称"))
         if not lines:
             report.add_gap("P0", "抖音", shop, "订单明细匹配", order_id, "结算订单未在订单明细中找到",
@@ -1017,6 +1033,15 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
     sales_total = refund_total = qty_total = platform_fee_signed = purchase_total = tail_total = ad_fee = 0.0
     counted_waybills: set[str] = set()
     product_lines: list[dict[str, Any]] = []
+    settlement_net_by_order: dict[str, float] = defaultdict(float)
+    for settlement_row in settle_rows:
+        settlement_order_id = norm(p(settlement_row, "订单号"))
+        settlement_txn_type = norm(p(settlement_row, "交易类型"))
+        settlement_cash = money(p(settlement_row, "商品实付/实退")) or money(p(settlement_row, "计佣基数"))
+        if settlement_txn_type == "结算入账":
+            settlement_net_by_order[settlement_order_id] += abs(settlement_cash)
+        elif settlement_txn_type == "退款":
+            settlement_net_by_order[settlement_order_id] -= abs(settlement_cash)
     for r in settle_rows:
         order_id = norm(p(r, "订单号"))
         if not order_id:
@@ -1059,10 +1084,21 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
         if is_income and order is not None:
             wb = norm(p(order, "快递单号"))
             carrier = norm(p(order, "快递公司"))
+            order_status = norm(p(order, "订单状态"))
+            settlement_net = settlement_net_by_order.get(order_id, 0.0)
+            cancelled_without_shipping = not wb and any(
+                marker in order_status for marker in ("已取消", "取消订单", "交易关闭")
+            ) and abs(settlement_net) <= 0.01
             if not wb:
-                report.add_gap("P0", "小红书", shop, "物流成本", order_id, "结算收入订单快递单号为空",
-                               "尾程费用缺失", "补订单查询快递单号")
-                report.add_log("小红书", shop, order_id, "", "", carrier, 0, "", "", "缺快递单号", "P0-物流缺口")
+                if cancelled_without_shipping:
+                    report.add_log(
+                        "小红书", shop, order_id, "", "", carrier, 0, "", "",
+                        f"订单状态={order_status}，结算净额={mny(settlement_net)}，未发货", "无需运费",
+                    )
+                else:
+                    report.add_gap("P0", "小红书", shop, "物流成本", order_id, "结算收入订单快递单号为空",
+                                   "尾程费用缺失", "补订单查询快递单号")
+                    report.add_log("小红书", shop, order_id, "", "", carrier, 0, "", "", "缺快递单号", "P0-物流缺口")
             else:
                 bill = bill_pool.get(wb)
                 if bill:

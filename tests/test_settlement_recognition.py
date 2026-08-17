@@ -66,6 +66,138 @@ class SettlementRecognitionTests(unittest.TestCase):
         self.assertFalse(any("缺订单查询" in str(row[6]) for row in result["gap_rows"]))
         self.assertTrue(any(row[4] == "PK02-S2" for row in result["cost_rows"]))
 
+    def test_xhs_cancelled_order_without_waybill_is_recorded_as_no_freight(self):
+        order_id = "P799684994323319861"
+        settlement = workbook_bytes(
+            "商品结算明细",
+            ["订单号", "交易类型", "商品数量", "商品实付/实退", "佣金总额", "商品名称"],
+            [order_id, "结算入账", 1, 214, -4.28, "手柄"],
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(settlement))
+        ws = wb["商品结算明细"]
+        ws.append([order_id, "退款", 1, -214, 4.28, "手柄"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        wb.close()
+        settlement = buf.getvalue()
+        order = workbook_bytes(
+            "包裹详情",
+            [
+                "订单号", "订单状态", "售后状态", "商家编码", "商品名称",
+                "SKU件数", "快递单号", "快递公司",
+            ],
+            [order_id, "已取消", "售后完成", "FF01A-04", "手柄", 1, "", ""],
+        )
+        raw = {
+            "source_files": [
+                {"platform": "小红书", "shop": "纷岚店", "fname": "小红书纷岚商品结算明细.xlsx", "buf": settlement},
+                {"platform": "小红书", "shop": "纷岚店", "fname": "小红书纷岚订单明细.xlsx", "buf": order},
+            ],
+            "logistics": [],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"FF01A-04": {"unit_cost": 50, "source": "产品采购成本台", "name": "手柄"}},
+            "2026-07",
+        )
+
+        logistics_gaps = [
+            row for row in result["gap_rows"]
+            if row[1] == "小红书" and row[4] == "物流成本" and row[5] == order_id
+        ]
+        self.assertEqual([], logistics_gaps)
+        self.assertTrue(any(
+            row[0] == "小红书" and row[3] == order_id and row[11] == "无需运费"
+            for row in result["log_rows"]
+        ))
+
+    def test_xhs_cancelled_order_without_matching_refund_keeps_freight_p0(self):
+        order_id = "P-CANCEL-NO-REFUND"
+        settlement = workbook_bytes(
+            "商品结算明细",
+            ["订单号", "交易类型", "商品数量", "商品实付/实退", "佣金总额", "商品名称"],
+            [order_id, "结算入账", 1, 214, -4.28, "手柄"],
+        )
+        order = workbook_bytes(
+            "包裹详情",
+            [
+                "订单号", "订单状态", "售后状态", "商家编码", "商品名称",
+                "SKU件数", "快递单号", "快递公司",
+            ],
+            [order_id, "已取消", "售后完成", "FF01A-04", "手柄", 1, "", ""],
+        )
+        raw = {
+            "source_files": [
+                {"platform": "小红书", "shop": "纷岚店", "fname": "小红书纷岚商品结算明细.xlsx", "buf": settlement},
+                {"platform": "小红书", "shop": "纷岚店", "fname": "小红书纷岚订单明细.xlsx", "buf": order},
+            ],
+            "logistics": [],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"FF01A-04": {"unit_cost": 50, "source": "产品采购成本台", "name": "手柄"}},
+            "2026-07",
+        )
+
+        self.assertTrue(any(
+            row[1] == "小红书" and row[4] == "物流成本" and row[5] == order_id
+            for row in result["gap_rows"]
+        ))
+
+    def test_confirmed_douyin_product_id_fills_blank_merchant_sku(self):
+        order_id = "6953848598969259333"
+        product_id = "3751006771863486516"
+        settlement = (
+            "订单号,结算单类型,收入合计,结算金额,商品数量,商品ID,商品名称,平台服务费\n"
+            f"{order_id},已结算,214,204,1,{product_id},食人花2代,10\n"
+        ).encode("utf-8-sig")
+        order = (
+            "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,"
+            "订单提交时间,支付完成时间,订单状态,快递信息\n"
+            f"{order_id},sub-1,食人花2代【磁吸+滑轨】,{product_id},,1,"
+            "2026-07-10 10:00:00,2026-07-10 10:01:00,已完成,SF123-顺丰速运\n"
+        ).encode("utf-8-sig")
+        raw = {
+            "source_files": [
+                {
+                    "platform": "抖音", "shop": "宝空店",
+                    "fname": "DL202608171903494679826433.csv", "buf": settlement,
+                },
+                {
+                    "platform": "抖音", "shop": "宝空店",
+                    "fname": "抖音宝空订单明细.csv", "buf": order,
+                },
+            ],
+            "logistics": [
+                {"tracking": "SF123", "carrier": "顺丰", "amount": 8, "source": "API"}
+            ],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"PK02-S3": {"unit_cost": 100, "source": "产品采购成本台", "name": "食人花2代"}},
+            "2026-07",
+        )
+
+        purchase_gaps = [
+            row for row in result["gap_rows"]
+            if row[1] == "抖音" and row[4] == "采购成本" and row[5] == order_id
+        ]
+        self.assertEqual([], purchase_gaps)
+        matching_costs = [
+            row for row in result["cost_rows"]
+            if row[0] == "抖音" and row[3] == order_id
+        ]
+        self.assertEqual("PK02-S3", matching_costs[0][4])
+        self.assertEqual(100, matching_costs[0][7])
+        self.assertTrue(any(
+            row[0:3] == ["抖音", "抖音宝空", "SKU映射确认"]
+            and "3751006771863486516 → PK02-S3" in str(row[6])
+            for row in result["source_rows"]
+        ))
+
     def test_confirmed_no_settlement_is_structured_input_not_a_missing_file(self):
         raw = {
             "source_files": [
