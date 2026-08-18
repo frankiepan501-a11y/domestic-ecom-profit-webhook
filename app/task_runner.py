@@ -179,9 +179,13 @@ async def _load_finance_cost_map(sku_set: set[str], lx_data: dict[str, dict]) ->
         if not key:
             continue
         current = cost_map.get(key)
-        if current and float(current.get("unit_cost") or 0) > 0:
-            continue
         info = lx_data.get(key) or lx_data.get(sku) or {}
+        if current and float(current.get("unit_cost") or 0) > 0:
+            # 成本仍以财务台为准；若财务台暂缺 ERP 品名，只补领星产品名，
+            # 避免财务展示退化为平台商品标题。
+            if not _scalar(current.get("name")):
+                current["name"] = info.get("name", "")
+            continue
         lx_cost = float(info.get("cost") or 0)
         if lx_cost > 0:
             cost_map[key] = {

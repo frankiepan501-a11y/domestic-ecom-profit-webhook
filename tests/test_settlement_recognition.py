@@ -59,12 +59,16 @@ class SettlementRecognitionTests(unittest.TestCase):
 
         result = settlement_engine.compute(
             raw,
-            {"PK02-S2": {"unit_cost": 20, "source": "产品采购成本台", "name": "手柄"}},
+            {"PK02-S2": {"unit_cost": 20, "source": "产品采购成本台", "name": "ERP小红书手柄"}},
             "2026-07",
         )
 
         self.assertFalse(any("缺订单查询" in str(row[6]) for row in result["gap_rows"]))
         self.assertTrue(any(row[4] == "PK02-S2" for row in result["cost_rows"]))
+        self.assertTrue(any(
+            row[5] == "PK02-S2" and row[6] == "ERP小红书手柄"
+            for row in result["product_rows"]
+        ))
 
     def test_xhs_cancelled_order_without_waybill_is_recorded_as_no_freight(self):
         order_id = "P799684994323319861"
@@ -278,6 +282,62 @@ class SettlementRecognitionTests(unittest.TestCase):
         self.assertAlmostEqual(rows["SKU-A"][15], 0.81, places=2)
         self.assertAlmostEqual(rows["SKU-B"][15], 0.20, places=2)
         self.assertAlmostEqual(sum(row[15] for row in rows.values()), 1.01, places=2)
+
+    def test_finance_product_rows_use_erp_name_and_merge_platform_titles_by_sku(self):
+        settlement = (
+            "订单号,结算单类型,收入合计,结算金额,商品数量,商品ID,商品名称,平台服务费\n"
+            "order-a,已结算,100,100,1,product-a,平台超长标题A,0\n"
+            "order-b,已结算,50,50,1,product-b,平台超长标题B,0\n"
+        ).encode("utf-8-sig")
+        orders = (
+            "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,快递信息\n"
+            "order-a,sub-a,平台超长标题A,product-a,SKU-A,1,SF-A-顺丰速运\n"
+            "order-b,sub-b,平台超长标题B,product-b,SKU-A,1,SF-B-顺丰速运\n"
+        ).encode("utf-8-sig")
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音结算订单.csv", "buf": settlement},
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音宝空订单明细.csv", "buf": orders},
+            ],
+            "logistics": [
+                {"tracking": "SF-A", "carrier": "顺丰", "amount": 8, "source": "账单"},
+                {"tracking": "SF-B", "carrier": "顺丰", "amount": 6, "source": "账单"},
+            ],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"SKU-A": {"unit_cost": 10, "source": "产品采购成本台", "name": "ERP中文品名A"}},
+            "2026-07",
+        )
+        rows = [
+            row for row in result["product_rows"]
+            if row[0] == "抖音" and row[3] == "抖音宝空" and row[5] == "SKU-A"
+        ]
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("ERP中文品名A", rows[0][6])
+        self.assertEqual(2, rows[0][7])
+        self.assertEqual(150, rows[0][9])
+        self.assertEqual(0, rows[0][11])
+        self.assertEqual(20, rows[0][13])
+        self.assertEqual(
+            rows[0][9] - rows[0][10] - sum(rows[0][11:16]),
+            rows[0][16],
+        )
+        self.assertTrue(all(row[5] == "ERP中文品名A" for row in result["cost_rows"]))
+
+        missing_name_result = settlement_engine.compute(
+            raw,
+            {"SKU-A": {"unit_cost": 10, "source": "产品采购成本台", "name": ""}},
+            "2026-07",
+        )
+        missing_name_rows = [
+            row for row in missing_name_result["product_rows"]
+            if row[0] == "抖音" and row[3] == "抖音宝空" and row[5] == "SKU-A"
+        ]
+        self.assertEqual("ERP品名未维护（SKU-A）", missing_name_rows[0][6])
+        self.assertNotIn("平台超长标题", missing_name_rows[0][6])
 
     def test_powkong_tax_reporting_export_yields_one_precise_settlement_request(self):
         uploaded = (

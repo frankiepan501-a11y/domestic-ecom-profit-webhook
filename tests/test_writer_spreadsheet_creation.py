@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import settlement_engine, writer
+from app import engine, main, settlement_engine, writer
 
 
 class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
@@ -69,6 +69,36 @@ class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(18, len(rows[0]))
         self.assertAlmostEqual(rows[0][16], 288.13, places=2)
         self.assertAlmostEqual(rows[0][17], 288.13 / (552 - 52), places=6)
+
+    def test_unmapped_sku_rows_are_not_merged_together(self):
+        report = settlement_engine.SettlementReport("2026-07")
+        for sales in (100, 200):
+            report.add_product(
+                "抖音", "抖音宝空", "", "ERP品名未维护（ERP SKU未映射）",
+                1, 0, sales, 0, 0, 0, 0, 0, 0,
+            )
+
+        self.assertEqual(2, len(report.product_rows()))
+
+    async def test_health_version_matches_fastapi_version(self):
+        payload = await main.health()
+
+        self.assertEqual(main.app.version, payload["version"])
+
+    def test_legacy_result_does_not_fall_back_to_marketplace_title(self):
+        result = engine.compute(
+            orders=[{
+                "platform": "天猫", "shop": "天猫宝空", "sku": "SKU-X",
+                "title": "平台商品长标题", "qty": 1, "payable": 100,
+                "main_oid": "order-x", "status": "交易成功",
+            }],
+            refunds=[], plat_fees=[], ads=[], logistics=[],
+            sku_costs={}, sku_names={}, year_month="2026-07",
+        )
+
+        row = result["by_sku"][("天猫", "天猫宝空", "SKU-X")]
+        self.assertEqual("ERP品名未维护（SKU-X）", row["name"])
+        self.assertNotIn("平台商品长标题", row["name"])
 
 
 if __name__ == "__main__":

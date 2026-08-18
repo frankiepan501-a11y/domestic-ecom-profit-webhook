@@ -19,6 +19,8 @@ from typing import Any
 import openpyxl
 import xlrd
 
+from .product_identity import erp_display_name
+
 
 COMPANY = "深圳奥迪尔"
 
@@ -335,7 +337,7 @@ class SettlementReport:
         self.gaps: list[list[Any]] = []
         self.source_rows: list[list[Any]] = []
         self.tax_rows: list[list[Any]] = []
-        self.product: dict[tuple[str, str, str, str], dict[str, float | str]] = {}
+        self.product: dict[tuple[str, str, str], dict[str, float | str]] = {}
 
     def add_gap(self, level: str, platform: str, shop: str, category: str, obj: str,
                 problem: str, impact: str, action: str) -> None:
@@ -374,9 +376,16 @@ class SettlementReport:
     def add_product(self, platform: str, shop: str, sku: str, name: str, qty: float,
                     refund_qty: float, sales: float, refund: float, platform_fee: float,
                     ad_fee: float, purchase: float, tail: float, other: float) -> None:
-        key = (platform, shop, sku, name)
+        # 财务统一表按平台 + 店铺 + ERP SKU 汇总。平台商品标题不是产品主键，
+        # 同一 SKU 即使以多个商品链接/标题成交，也只能形成一行。
+        normalized_sku = norm(sku)
+        # 空商家编码并不代表同一个 ERP SKU，不能把不同缺口商品合并。
+        internal_sku_key = normalized_sku or f"__UNMAPPED__{len(self.product):08d}"
+        key = (platform, shop, internal_sku_key)
         if key not in self.product:
             self.product[key] = {
+                "sku": normalized_sku,
+                "name": name,
                 "qty": 0.0, "refund_qty": 0.0, "sales": 0.0, "refund": 0.0,
                 "platform_fee": 0.0, "ad_fee": 0.0, "purchase": 0.0, "tail": 0.0,
                 "other": 0.0,
@@ -400,7 +409,7 @@ class SettlementReport:
         target_cents = int(round(mny(amount) * 100))
         if target_cents == 0:
             return
-        eligible: list[tuple[tuple[str, str, str, str], float]] = []
+        eligible: list[tuple[tuple[str, str, str], float]] = []
         for key, row in self.product.items():
             if key[0:2] != (platform, shop):
                 continue
@@ -412,7 +421,7 @@ class SettlementReport:
 
         total_net_sales = sum(net_sales for _, net_sales in eligible)
         remainder_key = max(eligible, key=lambda item: (item[1], item[0]))[0]
-        allocations: dict[tuple[str, str, str, str], int] = {}
+        allocations: dict[tuple[str, str, str], int] = {}
         allocated_cents = 0
         for key, net_sales in eligible:
             if key == remainder_key:
@@ -440,8 +449,10 @@ class SettlementReport:
 
     def product_rows(self) -> list[list[Any]]:
         rows: list[list[Any]] = []
-        for platform, shop, sku, name in sorted(self.product):
-            r = self.product[(platform, shop, sku, name)]
+        for platform, shop, internal_sku_key in sorted(self.product):
+            r = self.product[(platform, shop, internal_sku_key)]
+            sku = norm(r.get("sku"))
+            name = norm(r.get("name"))
             sales = float(r["sales"])
             refund = float(r["refund"])
             net = sales - refund
@@ -468,6 +479,7 @@ class SettlementReport:
             ["小红书", "小红书按商品结算明细确认入账/退款；退款数量回查订单查询包裹详情SKU件数扣减采购成本。"],
             ["物流", "按结算订单集合映射订单明细物流单号，再匹配前月/当月顺丰与中通账单；顺丰账单未命中时尝试EXP_RECE_QUERY_SFWAYBILL API。"],
             ["采购成本", "采购成本按ERP_SKU匹配产品采购成本台，优先采购成本(财务核算)，为空或0时用采购成本(ERP)，再兜底领星cg_price。"],
+            ["中文名称", "财务产品表固定显示ERP中文品名；平台商品标题只保留在订单明细，不参与产品汇总和成本核对。"],
             ["京东", "京东按到账/结算明细和无结算确认输出零销售或费用行，不静默跳过。"],
         ]
 
@@ -705,15 +717,13 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
         order = order_by_sub.get(sub)
         main = norm(p(r, "订单号"))
         sku = norm(p(order, "商家编码") or p(order, "外部系统编号"))
-        name = norm(p(order, "商品标题") or p(r, "商品名称"))
         qty = money(p(r, "数量"))
         sales = money(p(r, "订单实际金额（元）"))
         refund = money(p(r, "退款金额（元）"))
         refund_qty = min(qty, qty * refund / sales) if sales > 0 and refund > 0 else 0.0
         net_qty = max(qty - refund_qty, 0.0)
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
-        if not name:
-            name = cost_name
+        name = erp_display_name(sku, cost_name)
         purchase = net_qty * unit
         if not sku:
             report.add_gap("P0", "天猫", shop, "采购成本", main, "订单无法取得商家编码/外部系统编号",
@@ -936,7 +946,6 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                     "抖音", shop, "SKU映射确认", "国内电商平台沟通群确认", 1, "已确认",
                     f"商品ID {product_id} → {sku}；订单明细商家编码为空时使用",
                 )
-        name = norm(p(lines[0], "选购商品")) if lines else norm(p(r, "商品名称"))
         if not lines:
             report.add_gap("P0", "抖音", shop, "订单明细匹配", order_id, "结算订单未在订单明细中找到",
                            "无法补商家编码和物流单号", "补覆盖该订单下单时间范围的订单明细后重跑")
@@ -949,8 +958,7 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                            "无法映射采购成本", "补商家编码/ERP_SKU")
         net_qty = qty if is_income else (-abs(qty) if is_refund else 0.0)
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
-        if not name:
-            name = cost_name
+        name = erp_display_name(sku, cost_name)
         purchase = max(net_qty * unit, 0.0)
         if (is_income or is_refund) and net_qty > 0:
             if sku and unit <= 0:
@@ -1085,7 +1093,6 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
         platform_fee_signed += money(p(r, "佣金总额")) + money(p(r, "分销佣金")) + money(p(r, "花呗分期手续费"))
         order = order_by_order.get(order_id)
         sku = norm(p(order, "商家编码"))
-        name = norm(p(order, "商品名称") or p(r, "商品名称"))
         order_qty = money(p(order, "SKU件数"))
         if (is_income or is_refund) and qty == 0 and order_qty:
             qty = order_qty
@@ -1101,8 +1108,7 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
             report.add_gap("P0", "小红书", shop, "采购成本", order_id, "订单查询商家编码为空",
                            "无法映射采购成本", "补商家编码/ERP_SKU")
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
-        if not name:
-            name = cost_name
+        name = erp_display_name(sku, cost_name)
         if is_income and sku and unit <= 0:
             report.add_gap("P0", "小红书", shop, "采购成本", sku, "采购成本表未匹配或成本为0",
                            "毛利会虚高", "维护产品采购成本台后重跑")

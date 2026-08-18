@@ -19,3 +19,4 @@ This is a single-context repository. Read root `CONTEXT.md` when present and rel
 - Production Feishu cards must be tested in Frankie-only mode before they are routed to operators, finance, or procurement.
 - Preserve full gap context: platform, shop, object type, business reason, responsibility, evidence, and next action.
 - Do not treat an order id, platform product id, or merchant-code gap as an ERP SKU procurement-cost gap.
+- Finance-facing product names must come from the ERP Chinese product name. Keep marketplace titles only in order/source details, and aggregate product profit by platform + shop + confirmed ERP SKU rather than by title.

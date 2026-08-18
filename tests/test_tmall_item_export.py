@@ -37,7 +37,7 @@ class TmallItemExportTests(unittest.TestCase):
             "PK02-S2": {
                 "unit_cost": 10,
                 "source": "产品采购成本台",
-                "name": "食人花2代",
+                "name": "ERP食人花2代",
             }
         }
 
@@ -53,6 +53,8 @@ class TmallItemExportTests(unittest.TestCase):
             if row[5] == "5113837045333047045"
         ]
         self.assertEqual("PK02-S2", matching_costs[0][4])
+        matching_products = [row for row in result["product_rows"] if row[5] == "PK02-S2"]
+        self.assertEqual("ERP食人花2代", matching_products[0][6])
         self.assertIn("PK02-S2", extracted_skus)
         self.assertFalse(any("商家编码" in str(row[6]) for row in matching_gaps))
 

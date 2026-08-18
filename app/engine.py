@@ -16,6 +16,7 @@
 from collections import defaultdict
 
 from .parsers import _ym_match
+from .product_identity import erp_display_name
 
 
 TMALL_TAOBAO = {"天猫", "淘宝"}
@@ -230,7 +231,7 @@ def compute(orders: list[dict], refunds: list[dict], plat_fees: list[dict],
 
         a = agg[key]
         if not a["name"]:
-            a["name"] = (sku_names.get(sku) or o.get("title", "") or "")[:50]
+            a["name"] = erp_display_name(sku, sku_names.get(sku, ""))
         if included:
             a["qty"] += qty_eff
             a["gross"] += gross_line
