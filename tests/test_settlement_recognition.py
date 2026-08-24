@@ -24,6 +24,93 @@ def workbook_bytes(title, headers, values):
 
 
 class SettlementRecognitionTests(unittest.TestCase):
+    def test_tmall_ad_account_flow_excludes_prepayment_from_monthly_consumption(self):
+        account_flow = (
+            "记账时间,交易日期,收支类型,交易类型,操作金额(元),操作后余额(元),备注\n"
+            "2026-07-01 02:00:00,2026-06-30,支出,扣款,100.00,50.00,20260630现金消耗扣款\n"
+            "2026-06-18 14:25:28,2026-06-18,支出,付款,40.00,10.00,下单金额被预支付扣款\n"
+            "2026-06-18 14:25:28,2026-06-18,收入,充值,40.00,50.00,支付宝在线充值\n"
+        ).encode("gbk")
+        report = settlement_engine.SettlementReport("2026-06")
+
+        _, ad_fee = settlement_engine.read_tmall_fees(
+            report,
+            [{"fname": "0947_fixture.csv", "buf": account_flow}],
+            "天猫纷岚",
+            {},
+        )
+
+        self.assertEqual(100.0, ad_fee)
+        self.assertEqual(100.0, sum(row["spend"] for row in parsers.parse_tmall_ads(account_flow)))
+
+    def test_douyin_missing_ad_file_and_zero_spend_confirmation_is_p0(self):
+        settlement = (
+            "订单号,结算单类型,收入合计,结算金额,商品数量,商品ID,商品名称,平台服务费\n"
+            "order-a,已结算,100,95,1,product-a,商品A,5\n"
+        ).encode("utf-8-sig")
+        orders = (
+            "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,快递信息\n"
+            "order-a,sub-a,商品A,product-a,SKU-A,1,SF-A-顺丰速运\n"
+        ).encode("utf-8-sig")
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音结算订单.csv", "buf": settlement},
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音宝空订单明细.csv", "buf": orders},
+            ],
+            "logistics": [{"tracking": "SF-A", "carrier": "顺丰", "amount": 8, "source": "账单"}],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"SKU-A": {"unit_cost": 10, "source": "产品采购成本台", "name": "商品A"}},
+            "2026-06",
+        )
+
+        self.assertTrue(any(
+            row[0:5] == ["P0", "抖音", "抖音宝空", "2026-06", "广告费"]
+            for row in result["gap_rows"]
+        ))
+
+    def test_douyin_confirmed_zero_ad_spend_is_recorded_and_not_a_gap(self):
+        settlement = (
+            "订单号,结算单类型,收入合计,结算金额,商品数量,商品ID,商品名称,平台服务费\n"
+            "order-a,已结算,100,95,1,product-a,商品A,5\n"
+        ).encode("utf-8-sig")
+        orders = (
+            "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,快递信息\n"
+            "order-a,sub-a,商品A,product-a,SKU-A,1,SF-A-顺丰速运\n"
+        ).encode("utf-8-sig")
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音结算订单.csv", "buf": settlement},
+                {"platform": "抖音", "shop": "宝空店", "fname": "抖音宝空订单明细.csv", "buf": orders},
+            ],
+            "manifest_statuses": [{
+                "platform": "抖音",
+                "shop": "宝空店",
+                "file_type": "广告账单",
+                "status": "已确认无数据",
+            }],
+            "logistics": [{"tracking": "SF-A", "carrier": "顺丰", "amount": 8, "source": "账单"}],
+        }
+
+        result = settlement_engine.compute(
+            raw,
+            {"SKU-A": {"unit_cost": 10, "source": "产品采购成本台", "name": "商品A"}},
+            "2026-06",
+        )
+
+        monthly = next(row for row in result["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])
+        self.assertEqual(0.0, monthly[10])
+        self.assertFalse(any(
+            row[1:5] == ["抖音", "抖音宝空", "2026-06", "广告费"]
+            for row in result["gap_rows"]
+        ))
+        self.assertTrue(any(
+            row[0:6] == ["抖音", "抖音宝空", "广告说明", "资料清单状态", 0, "已确认无数据"]
+            for row in result["source_rows"]
+        ))
+
     def test_douyin_order_csv_is_parsed_as_csv_not_excel(self):
         buf = (
             "主订单编号,子订单编号,选购商品,商品ID,商家编码,商品数量,商品金额,"

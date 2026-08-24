@@ -250,8 +250,7 @@ def parse_tmall_ads(buf: bytes) -> list[dict]:
         # 天猫/淘宝 0947 账户流水：广告消耗在“操作金额(元)”，不是常规推广报表的“花费”。
         if "操作金额(元)" in col and ("交易类型" in col or "收支类型" in col):
             typ = str(g(r, "交易类型")).strip()
-            direction = str(g(r, "收支类型")).strip()
-            is_spend = typ == "扣款" or direction == "支出"
+            is_spend = typ == "扣款"
             out.append({
                 "date": g(r, "交易日期"),
                 "channel_id": g(r, "账户编号"),

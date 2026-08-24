@@ -473,7 +473,7 @@ class SettlementReport:
             ["试算定位", "本表是domestic-ecom-profit自动化试算，用于和人工基准逐字段A/B对账。"],
             ["资料范围", "当前P0按天猫、京东、抖音、小红书四个平台资料包；淘宝/拼多多暂缓。"],
             ["天猫归月", "天猫按交易货款账期/结算月口径；订单明细只补ERP_SKU和物流单号。"],
-            ["广告费", "天猫广告取0947账户流水中交易日期=当月且交易类型=扣款或收支类型=支出的行；充值行排除。"],
+            ["广告费", "天猫广告取0947账户流水中交易日期=当月且交易类型=扣款的实际消耗；付款/预付和充值行排除。"],
             ["平台费用", "天猫平台费纳入主要费用CSV，排除-流水文件避免重复计入预冻结流水。"],
             ["抖音", "抖音按结算订单确认收入/退款/平台服务费/站外推广费；订单明细补SKU和快递。"],
             ["小红书", "小红书按商品结算明细确认入账/退款；退款数量回查订单查询包裹详情SKU件数扣减采购成本。"],
@@ -635,11 +635,10 @@ def read_tmall_fees(report: SettlementReport, files: list[dict[str, Any]], shop:
             for r in rows:
                 trade_date = norm(p(r, "交易日期"))
                 typ = norm(p(r, "交易类型"))
-                direction = norm(p(r, "收支类型"))
                 amount = money(p(r, "操作金额(元)"))
-                include = trade_date.startswith(ym) and (typ == "扣款" or direction == "支出")
+                include = trade_date.startswith(ym) and typ == "扣款"
                 report.add_fee("天猫", shop, fname, "广告费", "", amount, "操作金额(元)",
-                               "计入：交易日期为当月且扣款/支出" if include else "排除：充值或非当月交易日期")
+                               "计入：交易日期为当月且交易类型=扣款" if include else "排除：付款/预付、充值或非当月交易日期")
                 if include:
                     ad_fee += amount
             continue
@@ -909,7 +908,38 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                 note = ""
             report.add_source("抖音", shop, "广告说明", fname, "", "已读取", norm(note))
 
-    sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = ad_fee = payback = 0.0
+    ad_rows = [
+        row for row in raw.get("ads", [])
+        if norm(row.get("platform")) == "抖音"
+        and canonical_shop("抖音", norm(row.get("shop"))) == shop
+    ]
+    ad_files = [
+        sf for sf in files
+        if norm(sf.get("kind")) == "广告" or norm(sf.get("attach_field")) == "广告/推广"
+    ]
+    ad_confirmed_zero = _manifest_confirmed_no_data(raw, "抖音", shop, "广告账单")
+    ad_fee = sum(abs(money(row.get("spend"))) for row in ad_rows)
+    if ad_rows:
+        report.add_source("抖音", shop, "广告账单", "运营上传附件", len(ad_rows), "已读取",
+                          "按广告消耗明细汇总")
+        for row in ad_rows:
+            report.add_fee("抖音", shop, norm(row.get("source") or "广告账单"), "广告费", "",
+                           abs(money(row.get("spend"))), "spend", "按广告消耗明细计入")
+    elif ad_confirmed_zero:
+        report.add_source("抖音", shop, "广告说明", "资料清单状态", 0, "已确认无数据",
+                          "运营已确认本月无广告消耗，广告费按0")
+    elif ad_files:
+        report.add_gap("P0", "抖音", shop, "广告费", shop,
+                       "已提交广告附件，但未解析出有效广告消耗明细",
+                       "广告费可能漏计，毛利会虚高",
+                       "补可解析的广告消耗明细，或在资料清单确认本月无广告消耗")
+    else:
+        report.add_gap("P0", "抖音", shop, "广告费", shop,
+                       "未提交广告账单，也未确认本月无广告消耗",
+                       "广告费可能漏计，毛利会虚高",
+                       "上传广告账单，或在资料清单确认本月无广告消耗")
+
+    sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = payback = 0.0
     counted_waybills: set[str] = set()
     recorded_sku_confirmations: set[tuple[str, str]] = set()
     for r in settle_rows:
@@ -1003,6 +1033,7 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                                abs(qty) if is_refund else 0.0, income if is_income else 0.0,
                                abs(net) if is_refund else 0.0, pf + offsite, 0.0, purchase,
                                tail_for_order, 0.0)
+    report.allocate_public_product_cost("抖音", shop, "ad_fee", ad_fee)
     report.allocate_public_product_cost("抖音", shop, "other", other_fee)
     status = "可作为自动化对比基准" if report.gap_count("抖音", shop, "P0") == 0 else "存在P0缺口-待补后重跑"
     report.add_monthly("抖音", shop, len(settle_rows), qty_total, sales_total, refund_total,

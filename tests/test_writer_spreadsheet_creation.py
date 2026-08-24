@@ -84,6 +84,8 @@ class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
         payload = await main.health()
 
         self.assertEqual(main.app.version, payload["version"])
+        self.assertTrue(payload["tmall_ad_actual_consumption_only"])
+        self.assertTrue(payload["douyin_ad_evidence_gate"])
 
     def test_legacy_result_does_not_fall_back_to_marketplace_title(self):
         result = engine.compute(
