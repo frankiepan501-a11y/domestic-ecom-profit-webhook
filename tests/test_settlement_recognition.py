@@ -27,9 +27,9 @@ class SettlementRecognitionTests(unittest.TestCase):
     def test_tmall_ad_account_flow_excludes_prepayment_from_monthly_consumption(self):
         account_flow = (
             "记账时间,交易日期,收支类型,交易类型,操作金额(元),操作后余额(元),备注\n"
-            "2026-07-01 02:00:00,2026-06-30,支出,扣款,100.00,50.00,20260630现金消耗扣款\n"
-            "2026-06-18 14:25:28,2026-06-18,支出,付款,40.00,10.00,下单金额被预支付扣款\n"
-            "2026-06-18 14:25:28,2026-06-18,收入,充值,40.00,50.00,支付宝在线充值\n"
+            "2026-07-01 02:00:00,2026-06-30,支出,扣款,8494.79,50.00,20260630现金消耗扣款\n"
+            "2026-06-18 14:25:28,2026-06-18,支出,付款,897.04,10.00,下单金额被预支付扣款\n"
+            "2026-06-18 14:25:28,2026-06-18,收入,充值,897.04,50.00,支付宝在线充值\n"
         ).encode("gbk")
         report = settlement_engine.SettlementReport("2026-06")
 
@@ -40,8 +40,18 @@ class SettlementRecognitionTests(unittest.TestCase):
             {},
         )
 
-        self.assertEqual(100.0, ad_fee)
-        self.assertEqual(100.0, sum(row["spend"] for row in parsers.parse_tmall_ads(account_flow)))
+        self.assertEqual(8494.79, ad_fee)
+        self.assertEqual(8494.79, sum(row["spend"] for row in parsers.parse_tmall_ads(account_flow)))
+
+    def test_douyin_empty_shop_still_records_ad_evidence_p0(self):
+        result = settlement_engine.compute({"source_files": []}, {}, "2026-06")
+
+        ad_gap_shops = {
+            row[2]
+            for row in result["gap_rows"]
+            if row[0] == "P0" and row[1] == "抖音" and row[4:6] == ["资料缺口", "广告账单"]
+        }
+        self.assertEqual({"抖音宝空", "抖音纷岚"}, ad_gap_shops)
 
     def test_douyin_missing_ad_file_and_zero_spend_confirmation_is_p0(self):
         settlement = (
@@ -66,10 +76,12 @@ class SettlementRecognitionTests(unittest.TestCase):
             "2026-06",
         )
 
-        self.assertTrue(any(
-            row[0:5] == ["P0", "抖音", "抖音宝空", "2026-06", "广告费"]
-            for row in result["gap_rows"]
-        ))
+        ad_gaps = [
+            row for row in result["gap_rows"]
+            if row[0:6] == ["P0", "抖音", "抖音宝空", "2026-06", "资料缺口", "广告账单"]
+        ]
+        self.assertEqual(len(ad_gaps), 1)
+        self.assertIn("抖音宝空订单明细.csv", ad_gaps[0][6])
 
     def test_douyin_confirmed_zero_ad_spend_is_recorded_and_not_a_gap(self):
         settlement = (
@@ -84,13 +96,23 @@ class SettlementRecognitionTests(unittest.TestCase):
             "source_files": [
                 {"platform": "抖音", "shop": "宝空店", "fname": "抖音结算订单.csv", "buf": settlement},
                 {"platform": "抖音", "shop": "宝空店", "fname": "抖音宝空订单明细.csv", "buf": orders},
+                {"platform": "抖音", "shop": "纷岚店", "fname": "抖音纷岚结算订单.csv", "buf": settlement},
+                {"platform": "抖音", "shop": "纷岚店", "fname": "抖音纷岚订单明细.csv", "buf": orders},
             ],
-            "manifest_statuses": [{
-                "platform": "抖音",
-                "shop": "宝空店",
-                "file_type": "广告账单",
-                "status": "已确认无数据",
-            }],
+            "manifest_statuses": [
+                {
+                    "platform": "抖音",
+                    "shop": "宝空店",
+                    "file_type": "广告账单",
+                    "status": "已确认无数据",
+                },
+                {
+                    "platform": "抖音",
+                    "shop": "纷岚店",
+                    "file_type": "广告账单",
+                    "status": "已确认无数据",
+                },
+            ],
             "logistics": [{"tracking": "SF-A", "carrier": "顺丰", "amount": 8, "source": "账单"}],
         }
 
@@ -100,16 +122,17 @@ class SettlementRecognitionTests(unittest.TestCase):
             "2026-06",
         )
 
-        monthly = next(row for row in result["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])
-        self.assertEqual(0.0, monthly[10])
-        self.assertFalse(any(
-            row[1:5] == ["抖音", "抖音宝空", "2026-06", "广告费"]
-            for row in result["gap_rows"]
-        ))
-        self.assertTrue(any(
-            row[0:6] == ["抖音", "抖音宝空", "广告说明", "资料清单状态", 0, "已确认无数据"]
-            for row in result["source_rows"]
-        ))
+        for shop in ("抖音宝空", "抖音纷岚"):
+            monthly = next(row for row in result["monthly_rows"] if row[1:3] == ["抖音", shop])
+            self.assertEqual(0.0, monthly[10])
+            self.assertFalse(any(
+                row[1:6] == ["抖音", shop, "2026-06", "资料缺口", "广告账单"]
+                for row in result["gap_rows"]
+            ))
+            self.assertTrue(any(
+                row[0:6] == ["抖音", shop, "广告说明", "资料清单状态", 0, "已确认无数据"]
+                for row in result["source_rows"]
+            ))
 
     def test_douyin_order_csv_is_parsed_as_csv_not_excel(self):
         buf = (
@@ -310,7 +333,17 @@ class SettlementRecognitionTests(unittest.TestCase):
         rows = [row for row in result["monthly_rows"] if row[1:3] == ["抖音", "抖音纷岚"]]
         self.assertEqual(1, len(rows))
         self.assertEqual("运营已确认本月无结算，按0试算", rows[0][19])
-        self.assertFalse(any(row[1:3] == ["抖音", "抖音纷岚"] and row[4] == "资料缺口" for row in result["gap_rows"]))
+        self.assertFalse(any(
+            row[1:3] == ["抖音", "抖音纷岚"]
+            and row[4] == "资料缺口"
+            and row[5] == "抖音纷岚"
+            for row in result["gap_rows"]
+        ))
+        self.assertTrue(any(
+            row[1:3] == ["抖音", "抖音纷岚"]
+            and row[4:6] == ["资料缺口", "广告账单"]
+            for row in result["gap_rows"]
+        ))
 
     def test_douyin_internal_entity_transfer_is_not_platform_fee(self):
         buf = (
@@ -445,7 +478,9 @@ class SettlementRecognitionTests(unittest.TestCase):
 
         gaps = [
             row for row in result["gap_rows"]
-            if row[1:3] == ["抖音", "抖音宝空"] and row[4] == "资料缺口"
+            if row[1:3] == ["抖音", "抖音宝空"]
+            and row[4] == "资料缺口"
+            and row[5] != "广告账单"
         ]
         self.assertEqual(1, len(gaps))
         self.assertIn("已上传 抖音 宝空 结算单.csv", gaps[0][6])

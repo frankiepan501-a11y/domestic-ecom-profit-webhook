@@ -825,82 +825,11 @@ def parse_douyin_express(info: Any) -> list[dict[str, Any]]:
     return out
 
 
-def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict[str, Any]],
-                   bill_pool: dict[str, dict[str, Any]], shop: str) -> None:
-    files = _files(raw, "抖音", shop)
-    if not files:
-        return
-    settle_sf = _douyin_settlement_file(files)
-    order_sf = _pick_file(files, "订单明细") or _pick_file(files, "订单.csv")
-
-    other_fee = 0.0
-    for sf, tx_rows in _douyin_fee_files(files):
-        report.add_source("抖音", shop, "动账/平台费用", _fname(sf), len(tx_rows), "已读取",
-                          "只纳入权益保险/消费者赔付/上门取件运费等经营费用；主体变更资金划转排除")
-        for r in tx_rows:
-            scene = norm(p(r, "动账场景"))
-            direction = norm(p(r, "动账方向"))
-            amount = money(p(r, "动账金额"))
-            if scene in ("权益保险", "消费者赔付", "上门取件运费") and direction == "出账":
-                fee = abs(amount)
-                other_fee += fee
-                report.add_fee("抖音", shop, _fname(sf), scene, norm(p(r, "订单号")), fee, "动账金额",
-                               "计入其他经营费用")
-            elif money(p(r, "支付保费")) > 0:
-                fee = money(p(r, "支付保费"))
-                other_fee += fee
-                report.add_fee("抖音", shop, _fname(sf), "权益保险", norm(p(r, "订单编号")), fee, "支付保费",
-                               "计入其他经营费用")
-
-    if not settle_sf:
-        if _manifest_confirmed_no_data(raw, "抖音", shop, "当月结算账单"):
-            report.add_source("抖音", shop, "当月结算账单", "资料清单状态", 0, "已确认无数据",
-                              "运营已在资料提交页确认本月无结算")
-            report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee,
-                               "运营已确认本月无结算，按0试算")
-            return
-        uploaded = [
-            _fname(sf) for sf in files
-            if "结算" in _fname(sf) and _fname(sf).lower().endswith((".csv", ".xlsx", ".xls"))
-        ]
-        if uploaded:
-            problem = (
-                f"已上传 {uploaded[0]}，但表头不是抖音结算订单明细；"
-                "缺少订单号、结算单类型、收入合计、结算金额、商品数量、商品ID字段"
-            )
-            action = "从抖店资金/结算订单导出包含上述字段的结算订单明细，不要重复上传涉税报送明细"
-        else:
-            problem = "缺抖音结算订单明细文件"
-            action = "补抖音结算订单明细后重跑"
-        report.add_gap("P0", "抖音", shop, "资料缺口", shop, problem,
-                       "无法按结算月计算销售、退款、平台费和采购成本", action)
-        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee, "缺有效结算订单明细")
-        return
-    if not order_sf:
-        report.add_gap("P0", "抖音", shop, "资料缺口", shop, "缺订单明细文件",
-                       "无法补商家编码和物流单号", "补订单明细后重跑")
-        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, 0, 0, 0, other_fee, "缺订单明细")
-        return
-    settle_rows = [r for r in read_csv(settle_sf.get("buf") or b"") if norm(p(r, "订单号"))]
-    order_rows = sheet_rows(order_sf.get("buf") or b"", _fname(order_sf), "Sheet1")
-    report.add_source("抖音", shop, "结算订单", _fname(settle_sf), len(settle_rows), "已读取", "按结算时间/结算月")
-    report.add_source("抖音", shop, "订单明细", _fname(order_sf), len(order_rows), "已读取", "补ERP_SKU/物流单号/快递信息")
-    by_order_product: dict[str, list[dict[str, Any]]] = {}
-    by_order: dict[str, list[dict[str, Any]]] = {}
-    for r in order_rows:
-        oid = norm(p(r, "主订单编号"))
-        product_id = norm(p(r, "商品ID"))
-        add_dy_index(by_order, oid, r)
-        add_dy_index(by_order_product, f"{oid}|{product_id}", r)
-
+def record_douyin_ad_evidence(report: SettlementReport, raw: dict, files: list[dict[str, Any]],
+                               shop: str) -> float:
+    """Record Douyin ad spend or a P0 evidence gap before any settlement early return."""
     for sf in files:
         fname = _fname(sf)
-        if "税务" in fname or "涉税" in fname:
-            rows = read_csv(sf.get("buf") or b"")
-            count = sum(1 for r in rows if norm(p(r, "报送场景")) or norm(p(r, "订单号")))
-            report.add_source("抖音", shop, "涉税信息", fname, count, "已读取",
-                              "用于后续税务A/B核对；本月毛利不重复计销售服务收入")
-            report.add_tax("抖音", shop, fname, "涉税信息", count, "已读取", "已读入涉税资料，P0未重复计入毛利收入")
         if fname.endswith(".txt") and "广告" in fname:
             try:
                 note = (sf.get("buf") or b"").decode("utf-8", errors="ignore")
@@ -929,16 +858,95 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         report.add_source("抖音", shop, "广告说明", "资料清单状态", 0, "已确认无数据",
                           "运营已确认本月无广告消耗，广告费按0")
     elif ad_files:
-        report.add_gap("P0", "抖音", shop, "广告费", shop,
-                       "已提交广告附件，但未解析出有效广告消耗明细",
+        ad_file_names = "、".join(sorted(_fname(sf) for sf in ad_files if _fname(sf))) or "未命名广告附件"
+        report.add_gap("P0", "抖音", shop, "资料缺口", "广告账单",
+                       f"已提交广告附件：{ad_file_names}；但未解析出有效广告消耗明细",
                        "广告费可能漏计，毛利会虚高",
                        "补可解析的广告消耗明细，或在资料清单确认本月无广告消耗")
     else:
-        report.add_gap("P0", "抖音", shop, "广告费", shop,
-                       "未提交广告账单，也未确认本月无广告消耗",
+        checked_file_names = "、".join(sorted(_fname(sf) for sf in files if _fname(sf))) or "无附件"
+        report.add_gap("P0", "抖音", shop, "资料缺口", "广告账单",
+                       f"已检查当前附件：{checked_file_names}；未提交广告账单，也未确认本月无广告消耗",
                        "广告费可能漏计，毛利会虚高",
                        "上传广告账单，或在资料清单确认本月无广告消耗")
+    return ad_fee
 
+
+def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict[str, Any]],
+                   bill_pool: dict[str, dict[str, Any]], shop: str) -> None:
+    files = _files(raw, "抖音", shop)
+    settle_sf = _douyin_settlement_file(files)
+    order_sf = _pick_file(files, "订单明细") or _pick_file(files, "订单.csv")
+    ad_fee = record_douyin_ad_evidence(report, raw, files, shop)
+
+    other_fee = 0.0
+    for sf, tx_rows in _douyin_fee_files(files):
+        report.add_source("抖音", shop, "动账/平台费用", _fname(sf), len(tx_rows), "已读取",
+                          "只纳入权益保险/消费者赔付/上门取件运费等经营费用；主体变更资金划转排除")
+        for r in tx_rows:
+            scene = norm(p(r, "动账场景"))
+            direction = norm(p(r, "动账方向"))
+            amount = money(p(r, "动账金额"))
+            if scene in ("权益保险", "消费者赔付", "上门取件运费") and direction == "出账":
+                fee = abs(amount)
+                other_fee += fee
+                report.add_fee("抖音", shop, _fname(sf), scene, norm(p(r, "订单号")), fee, "动账金额",
+                               "计入其他经营费用")
+            elif money(p(r, "支付保费")) > 0:
+                fee = money(p(r, "支付保费"))
+                other_fee += fee
+                report.add_fee("抖音", shop, _fname(sf), "权益保险", norm(p(r, "订单编号")), fee, "支付保费",
+                               "计入其他经营费用")
+
+    if not settle_sf:
+        if _manifest_confirmed_no_data(raw, "抖音", shop, "当月结算账单"):
+            report.add_source("抖音", shop, "当月结算账单", "资料清单状态", 0, "已确认无数据",
+                              "运营已在资料提交页确认本月无结算")
+            report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee,
+                               "运营已确认本月无结算，按0试算")
+            return
+        uploaded = [
+            _fname(sf) for sf in files
+            if "结算" in _fname(sf) and _fname(sf).lower().endswith((".csv", ".xlsx", ".xls"))
+        ]
+        if uploaded:
+            problem = (
+                f"已上传 {uploaded[0]}，但表头不是抖音结算订单明细；"
+                "缺少订单号、结算单类型、收入合计、结算金额、商品数量、商品ID字段"
+            )
+            action = "从抖店资金/结算订单导出包含上述字段的结算订单明细，不要重复上传涉税报送明细"
+        else:
+            problem = "缺抖音结算订单明细文件"
+            action = "补抖音结算订单明细后重跑"
+        report.add_gap("P0", "抖音", shop, "资料缺口", shop, problem,
+                       "无法按结算月计算销售、退款、平台费和采购成本", action)
+        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee, "缺有效结算订单明细")
+        return
+    if not order_sf:
+        report.add_gap("P0", "抖音", shop, "资料缺口", shop, "缺订单明细文件",
+                       "无法补商家编码和物流单号", "补订单明细后重跑")
+        report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee, "缺订单明细")
+        return
+    settle_rows = [r for r in read_csv(settle_sf.get("buf") or b"") if norm(p(r, "订单号"))]
+    order_rows = sheet_rows(order_sf.get("buf") or b"", _fname(order_sf), "Sheet1")
+    report.add_source("抖音", shop, "结算订单", _fname(settle_sf), len(settle_rows), "已读取", "按结算时间/结算月")
+    report.add_source("抖音", shop, "订单明细", _fname(order_sf), len(order_rows), "已读取", "补ERP_SKU/物流单号/快递信息")
+    by_order_product: dict[str, list[dict[str, Any]]] = {}
+    by_order: dict[str, list[dict[str, Any]]] = {}
+    for r in order_rows:
+        oid = norm(p(r, "主订单编号"))
+        product_id = norm(p(r, "商品ID"))
+        add_dy_index(by_order, oid, r)
+        add_dy_index(by_order_product, f"{oid}|{product_id}", r)
+
+    for sf in files:
+        fname = _fname(sf)
+        if "税务" in fname or "涉税" in fname:
+            rows = read_csv(sf.get("buf") or b"")
+            count = sum(1 for r in rows if norm(p(r, "报送场景")) or norm(p(r, "订单号")))
+            report.add_source("抖音", shop, "涉税信息", fname, count, "已读取",
+                              "用于后续税务A/B核对；本月毛利不重复计销售服务收入")
+            report.add_tax("抖音", shop, fname, "涉税信息", count, "已读取", "已读入涉税资料，P0未重复计入毛利收入")
     sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = payback = 0.0
     counted_waybills: set[str] = set()
     recorded_sku_confirmations: set[tuple[str, str]] = set()
