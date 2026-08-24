@@ -115,6 +115,22 @@ class CostGapClassificationTests(unittest.TestCase):
         self.assertEqual(["运单号", "店铺", "订单号"], [x["object_type"] for x in classified["operations"]])
         self.assertEqual(["物流成本", "资料缺口", "物流成本"], [x["gap_category"] for x in classified["operations"]])
 
+    def test_ad_evidence_gap_preserves_file_type_object(self):
+        settlement = {
+            "gap_rows": [[
+                "P0", "抖音", "抖音宝空", "2026-06", "资料缺口",
+                "广告账单", "已检查当前附件：抖音宝空订单明细.csv；未提交广告账单",
+                "广告费可能漏计，毛利会虚高", "上传广告账单，或确认本月无广告消耗",
+            ]],
+            "cost_rows": [],
+        }
+
+        classified = cost_gap_alert.classify_settlement_cost_gaps(settlement)
+
+        self.assertEqual(1, len(classified["operations"]))
+        self.assertEqual("资料类型", classified["operations"][0]["object_type"])
+        self.assertEqual("广告账单", classified["operations"][0]["object"])
+
     def test_same_erp_sku_across_shops_keeps_matching_shop_context(self):
         settlement = {
             "gap_rows": [[

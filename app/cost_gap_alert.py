@@ -116,7 +116,7 @@ def classify_settlement_cost_gaps(
         name = ""
         source = ""
         if gap_category == "资料缺口":
-            object_type = "店铺"
+            object_type = "店铺" if obj == shop else "资料类型"
         elif gap_category == "物流成本":
             if any(marker in haystack for marker in ("物流单号为空", "快递单号为空", "未解析到有效运单号")):
                 object_type = "订单号"
