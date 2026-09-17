@@ -278,7 +278,7 @@ def _matching_files(files: list[dict[str, Any]], *keywords: str) -> list[dict[st
 def _is_order_detail_export(filename: str) -> bool:
     """Recognize official order and item detail exports used to enrich settlement rows."""
     return any(keyword in filename for keyword in (
-        "订单明细", "订单查询", "ExportOrderList", "ExportItemlList", "ExportItemList",
+        "订单明细", "订单详细", "订单查询", "ExportOrderList", "ExportItemlList", "ExportItemList",
     ))
 
 
@@ -623,15 +623,22 @@ def read_tmall_fees(report: SettlementReport, files: list[dict[str, Any]], shop:
     platform_fee = 0.0
     ad_fee = 0.0
     ym = report.year_month
+    seen_files: set[str] = set()
     for sf in sorted(files, key=lambda x: _fname(x)):
         fname = _fname(sf)
         base = _basename(fname)
         if not fname.lower().endswith(".csv") or base.startswith("~$"):
             continue
-        if "交易货款" in fname:
+        if "交易货款" in fname or "平台结算账单" in fname:
             continue
-        rows = read_csv(sf.get("buf") or b"", prefer_gbk=True)
-        if base.startswith("0947_"):
+        buf = sf.get("buf") or b""
+        digest = hashlib.sha256(buf).hexdigest()
+        if digest in seen_files:
+            continue
+        seen_files.add(digest)
+        rows = read_csv(buf, prefer_gbk=True)
+        headers = {norm(key) for key in rows[0]} if rows else set()
+        if base.startswith("0947_") or {"交易日期", "交易类型", "操作金额(元)"}.issubset(headers):
             for r in rows:
                 trade_date = norm(p(r, "交易日期"))
                 typ = norm(p(r, "交易类型"))
@@ -647,7 +654,7 @@ def read_tmall_fees(report: SettlementReport, files: list[dict[str, Any]], shop:
         for r in rows:
             amount = 0.0
             field = ""
-            for candidate in ("扣费金额(元)", "扣费金额", "本月付款", "积分类服务费金额", "账单金额"):
+            for candidate in ("支出金额（元）", "支出金额(元)", "扣费金额(元)", "扣费金额", "本月付款", "积分类服务费金额", "账单金额"):
                 amount = money(p(r, candidate))
                 if amount:
                     field = candidate
@@ -677,7 +684,7 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
     # carrier month bills only once in the global company slot, so miss in the
     # shop pool must fall back to the global pool passed by compute().
     shop_bill_pool = build_bill_pool({"source_files": files, "logistics": []})
-    trade_sf = _pick_file(files, "交易货款")
+    trade_sf = _pick_file(files, "交易货款") or _pick_file(files, "平台结算账单")
     if not trade_sf:
         report.add_gap("P0", "天猫", shop, "资料缺口", shop, "未找到交易货款结算文件", "无法计算天猫结算月收入",
                        "补交易货款文件后重跑")
