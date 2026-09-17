@@ -23,6 +23,35 @@ class TmallAugustInputTests(unittest.TestCase):
         self.assertEqual((16.5, 0.0), (fee, ad))
         self.assertEqual(16.5, by_order["A"])
 
+    def test_august_carrier_bill_names(self):
+        import io
+        import openpyxl
+        sf = openpyxl.Workbook()
+        ws = sf.active
+        ws.title = "账单明细"
+        ws.append(["说明"])
+        ws.append(["日期", "其他", "运单号码", "应付金额"])
+        ws.append(["2026-08-01", "", "SF123", 20])
+        out = io.BytesIO()
+        sf.save(out)
+        sf.close()
+        sf_bytes = out.getvalue()
+
+        zto = openpyxl.Workbook()
+        ws = zto.active
+        ws.title = "Sheet1"
+        ws.append(["账单日期", "运单号", "合计"])
+        ws.append(["2026-08-01", "ZT123", 8])
+        out = io.BytesIO()
+        zto.save(out)
+        zto.close()
+        pool = se.build_bill_pool({"source_files": [
+            {"fname": "760BC_7604967054-202608.xlsx", "buf": sf_bytes},
+            {"fname": "duplicate/760BC_7604967054-202608.xlsx", "buf": sf_bytes},
+            {"fname": "FUNLAB纷岚的店 8月份账单.xlsx", "buf": out.getvalue()},
+        ]})
+        self.assertEqual(20, pool["SF123"]["amount"])
+        self.assertEqual(8, pool["ZT123"]["amount"])
     def test_august_ad_and_order_export_names(self):
         self.assertTrue(se._is_order_detail_export("8月宝空订单详细.xlsx"))
         body = (
@@ -42,5 +71,3 @@ class TmallAugustInputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

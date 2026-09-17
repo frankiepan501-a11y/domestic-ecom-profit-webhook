@@ -527,12 +527,14 @@ def build_bill_pool(raw: dict) -> dict[str, dict[str, Any]]:
         if fname.startswith("~$"):
             continue
         buf = sf.get("buf") or b""
-        if ("顺丰" in fname or "中通" in fname) and fname.endswith((".xlsx", ".xls")):
+        is_sf_bill = "顺丰" in fname or "760BC_" in fname or "760WBD" in fname
+        is_zto_bill = "中通" in fname or "月份账单" in fname
+        if (is_sf_bill or is_zto_bill) and fname.endswith((".xlsx", ".xls")):
             digest = hashlib.sha1(buf).hexdigest()
             if digest in seen_bill_files:
                 continue
             seen_bill_files.add(digest)
-        if "顺丰" in fname and fname.endswith((".xlsx", ".xls")):
+        if is_sf_bill and fname.endswith((".xlsx", ".xls")):
             rows = sheet_rows(buf, fname, "账单明细", header_row=2, key_col=3)
             for r in rows:
                 wb = norm(p(r, "运单号码"))
@@ -543,7 +545,7 @@ def build_bill_pool(raw: dict) -> dict[str, dict[str, Any]]:
                     "sheet": "账单明细", "date": norm(p(r, "日期")), "source": "月结账单",
                 })
                 item["amount"] += money(p(r, "应付金额"))
-        elif "中通" in fname and fname.endswith((".xlsx", ".xls")):
+        elif is_zto_bill and fname.endswith((".xlsx", ".xls")):
             rows = sheet_rows(buf, fname, "Sheet1", header_row=1, key_col=2)
             for r in rows:
                 wb = norm(p(r, "运单号"))
