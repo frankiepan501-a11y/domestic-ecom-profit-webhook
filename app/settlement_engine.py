@@ -11,6 +11,7 @@ import csv
 import hashlib
 import io
 import math
+from decimal import Decimal, ROUND_HALF_UP
 import re
 from collections import defaultdict
 from datetime import date, datetime
@@ -40,6 +41,15 @@ PRODUCT_HEADER = [
     "国内电商平台名称", "运营人员", "国家", "站点", "月份", "MSKU", "中文名称", "销量",
     "退款数量", "销售额(RMB)", "退款(RMB)", "平台服务费(RMB)", "广告费(RMB)",
     "采购成本(RMB)", "尾程费用(RMB)", "其他成本(RMB)", "毛利润(RMB)", "毛利率",
+]
+SKU_SUMMARY_HEADER = [
+    "店铺", "月份", "ERP SKU", "中文名称", "销量", "退款折算数量",
+    "净成本数量", "销售额(RMB)", "退款(RMB)", "净销售额(RMB)",
+    "平台费用分摊(RMB)", "广告费分摊(RMB)", "采购成本(RMB)",
+    "尾程费用(RMB)", "其他费用(RMB)", "试算毛利(RMB)", "毛利率",
+    "净回款(RMB)", "回款率", "退款率", "平台费用率", "广告费率",
+    "采购成本率", "尾程费用率", "采购成本单价(RMB)", "成本来源",
+    "店铺净销售额分摊权重",
 ]
 COST_HEADER = [
     "平台", "店铺", "月份", "订单号", "ERP_SKU", "品名", "净成本数量", "单件采购成本",
@@ -468,6 +478,87 @@ class SettlementReport:
             ])
         return rows
 
+    def sku_summary_rows(self) -> list[list[Any]]:
+        """Tmall finance SKU view; allocate shared fees in cents per shop."""
+        rows: list[list[Any]] = []
+        for monthly in self.monthly:
+            if monthly[1] != "天猫":
+                continue
+            shop = monthly[2]
+            products = [
+                value for (platform, product_shop, _), value in sorted(self.product.items())
+                if platform == "天猫" and product_shop == shop
+            ]
+            if not products:
+                continue
+            weights = [
+                Decimal(str(mny(float(p["sales"]) - float(p["refund"]))))
+                for p in products
+            ]
+            total_weight = sum(weights)
+            if total_weight <= 0 and (monthly[9] or monthly[10]):
+                raise ValueError(f"{shop}净销售额非正，无法分摊平台费和广告费")
+            remainder = max(range(len(products)), key=lambda i: (weights[i], str(products[i]["sku"])))
+
+            def allocate(amount: Any) -> list[float]:
+                cents = int((Decimal(str(amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+                out = [0] * len(products)
+                if total_weight:
+                    for i, weight in enumerate(weights):
+                        if i != remainder:
+                            out[i] = int((Decimal(cents) * weight / total_weight).quantize(
+                                Decimal("1"), rounding=ROUND_HALF_UP))
+                out[remainder] = cents - sum(out)
+                return [value / 100 for value in out]
+
+            platform_alloc = allocate(monthly[9])
+            ad_alloc = allocate(monthly[10])
+            shop_rows = []
+            for i, product in enumerate(products):
+                sku = str(product["sku"])
+                costs = [c for c in self.cost_rows if c[0] == "天猫" and c[1] == shop and c[4] == sku]
+                units = {mny(c[7]) for c in costs}
+                sources = {str(c[9]) for c in costs}
+                unit = next(iter(units)) if len(units) == 1 else ""
+                source = next(iter(sources)) if len(sources) == 1 else ("多来源，见SKU成本明细" if sources else "")
+                sales = mny(product["sales"])
+                refund = mny(product["refund"])
+                net = mny(sales - refund)
+                purchase = mny(product["purchase"])
+                tail = mny(product["tail"])
+                other = mny(product["other"])
+                fee = platform_alloc[i]
+                ad = ad_alloc[i]
+                gross = mny(net - fee - ad - purchase - tail - other)
+                receipt = mny(net - fee - ad - other)
+                shop_rows.append([
+                    shop, self.year_month, sku, product["name"], mny(product["qty"]),
+                    mny(product["refund_qty"]), mny(sum(float(c[6]) for c in costs)),
+                    sales, refund, net, fee, ad, purchase, tail, other, gross,
+                    pct(gross, net) if net else "", receipt, pct(receipt, net) if net else "",
+                    pct(refund, sales) if sales else "", pct(fee, net) if net else "",
+                    pct(ad, net) if net else "", pct(purchase, net) if net else "",
+                    pct(tail, net) if net else "", unit, source,
+                    float(weights[i] / total_weight) if total_weight else "",
+                ])
+            checks = {7: 6, 8: 7, 9: 8, 10: 9, 11: 10, 12: 11,
+                      13: 12, 14: 13, 15: 14, 17: 16}
+            for sku_col, monthly_col in checks.items():
+                actual = sum(Decimal(str(row[sku_col])) for row in shop_rows)
+                expected = Decimal(str(monthly[monthly_col]))
+                if abs(actual - expected) > Decimal("0.001"):
+                    raise ValueError(
+                        f"{shop} SKU毛利汇总 {SKU_SUMMARY_HEADER[sku_col]} "
+                        f"与月度毛利试算不一致: {actual} != {expected}"
+                    )
+            rows.extend(shop_rows)
+            total_row = ["" for _ in SKU_SUMMARY_HEADER]
+            total_row[0:3] = [shop, self.year_month, "店铺合计"]
+            for col in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17):
+                total_row[col] = mny(sum(float(row[col]) for row in shop_rows))
+            rows.append(total_row)
+        return rows
+
     def notes(self) -> list[list[Any]]:
         return [
             ["试算定位", "本表是domestic-ecom-profit自动化试算，用于和人工基准逐字段A/B对账。"],
@@ -480,6 +571,9 @@ class SettlementReport:
             ["物流", "按结算订单集合映射订单明细物流单号，再匹配前月/当月顺丰与中通账单；顺丰账单未命中时尝试EXP_RECE_QUERY_SFWAYBILL API。"],
             ["采购成本", "采购成本按ERP_SKU匹配产品采购成本台，优先采购成本(财务核算)，为空或0时用采购成本(ERP)，再兜底领星cg_price。"],
             ["中文名称", "财务产品表固定显示ERP中文品名；平台商品标题只保留在订单明细，不参与产品汇总和成本核对。"],
+            ["退款折算数量", "按结算订单退款金额/销售额×销量折算，用于冲减净成本数量；不是实际退回仓库件数，可为小数。"],
+            ["尾程费用", "本表为发给消费者这一段的运单物流费用，按运单分摊到订单和SKU；不含头程或仓储。"],
+            ["SKU毛利汇总", "天猫平台费和广告按店铺SKU净销售额占比分摊到分，尾差归净销售额最高SKU；逐店合计须与月度毛利试算一致。"],
             ["京东", "京东按到账/结算明细和无结算确认输出零销售或费用行，不静默跳过。"],
         ]
 
@@ -487,6 +581,7 @@ class SettlementReport:
         return {
             "monthly_rows": self.monthly,
             "product_rows": self.product_rows(),
+            "sku_summary_rows": self.sku_summary_rows(),
             "cost_rows": self.cost_rows,
             "log_rows": self.log_rows,
             "fee_rows": self.fee_rows,
@@ -497,6 +592,7 @@ class SettlementReport:
             "headers": {
                 "月度毛利试算": MONTHLY_HEADER,
                 "产品毛利_月度": PRODUCT_HEADER,
+                "SKU毛利汇总": SKU_SUMMARY_HEADER,
                 "产品毛利_季度": PRODUCT_HEADER,
                 "SKU成本明细": COST_HEADER,
                 "物流匹配明细": LOG_HEADER,

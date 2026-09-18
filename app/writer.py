@@ -21,6 +21,7 @@ SHEET_DEFS = [
     ("12_异常预警", 500, 9),
     ("月度毛利试算", 500, 20),
     ("产品毛利_月度", 1000, PRODUCT_SHEET_COLUMN_COUNT),
+    ("SKU毛利汇总", 1000, len(settlement_engine.SKU_SUMMARY_HEADER)),
     ("产品毛利_季度", 1000, PRODUCT_SHEET_COLUMN_COUNT),
     ("SKU成本明细", 5000, 10),
     ("物流匹配明细", 5000, 12),
@@ -46,6 +47,7 @@ HEADERS = {
     "12_异常预警": ['异常类型','严重度','平台','店铺','ERP_SKU/单号','描述','影响金额','处理建议'],
     "月度毛利试算": ['月份','平台','店铺','主体','销售订单数','销量','销售额(RMB)','退款(RMB)','净销售额(RMB)','平台费用(RMB)','广告费(RMB)','采购成本(RMB)','尾程费用(RMB)','其他费用(RMB)','试算毛利(RMB)','试算毛利率','结算回款/净回款(RMB)','P0缺口数','P1注意项','状态'],
     "产品毛利_月度": list(settlement_engine.PRODUCT_HEADER),
+    "SKU毛利汇总": list(settlement_engine.SKU_SUMMARY_HEADER),
     "产品毛利_季度": list(settlement_engine.PRODUCT_HEADER),
     "SKU成本明细": ['平台','店铺','月份','订单号','ERP_SKU','品名','净成本数量','单件采购成本','采购成本','成本来源'],
     "物流匹配明细": ['平台','店铺','月份','订单号','子订单号','运单号','承运商','分摊尾程费用','账单文件/API','账单sheet','来源','状态'],
@@ -346,6 +348,47 @@ async def write_result_sheets(token: str, sm: dict, year_month: str, result: dic
         await _batch_write(token, sm["12_异常预警"], alerts)
 
 
+def _sku_summary_sheet_rows(rows: list[list]) -> list[list]:
+    """Use sheet formulas for visible calculations; engine values remain A/B baseline."""
+    out = []
+    shop_start = {}
+    last = len(rows) + 1
+    for number, source in enumerate(rows, start=2):
+        row = list(source)
+        shop = row[0]
+        if row[2] == "店铺合计":
+            start = shop_start[shop]
+            for col in ("E", "F", "G", "H", "I", "K", "L", "M", "N", "O"):
+                index = ord(col) - ord("A")
+                row[index] = {"type": "formula", "text": f"=SUM({col}{start}:{col}{number-1})"}
+        else:
+            shop_start.setdefault(shop, number)
+        formulas = {
+            "J": f"=H{number}-I{number}",
+            "P": f"=J{number}-SUM(K{number}:O{number})",
+            "Q": f'=IF(J{number}=0,"",P{number}/J{number})',
+            "R": f"=J{number}-K{number}-L{number}-O{number}",
+            "S": f'=IF(J{number}=0,"",R{number}/J{number})',
+            "T": f'=IF(H{number}=0,"",I{number}/H{number})',
+            "U": f'=IF(J{number}=0,"",K{number}/J{number})',
+            "V": f'=IF(J{number}=0,"",L{number}/J{number})',
+            "W": f'=IF(J{number}=0,"",M{number}/J{number})',
+            "X": f'=IF(J{number}=0,"",N{number}/J{number})',
+        }
+        if row[2] != "店铺合计":
+            formulas["AA"] = (
+                f'=IF(J{number}=0,"",J{number}/'
+                f'SUMIFS($J$2:$J$' + str(last) + ',$A$2:$A$' + str(last) +
+                f',A{number},$C$2:$C$' + str(last) + ',"<>店铺合计"))'
+            )
+        else:
+            formulas["AA"] = f"=SUM(AA{shop_start[shop]}:AA{number-1})"
+        for col, formula in formulas.items():
+            row[26 if col == "AA" else ord(col) - ord("A")] = {"type": "formula", "text": formula}
+        out.append(row)
+    return out
+
+
 async def write_settlement_sheets(token: str, sm: dict, settlement: dict):
     """Write finance-confirmation sheets produced by settlement_engine.
 
@@ -356,6 +399,7 @@ async def write_settlement_sheets(token: str, sm: dict, settlement: dict):
     mapping = {
         "月度毛利试算": settlement.get("monthly_rows", []),
         "产品毛利_月度": settlement.get("product_rows", []),
+        "SKU毛利汇总": _sku_summary_sheet_rows(settlement.get("sku_summary_rows", [])),
         "产品毛利_季度": settlement.get("product_rows", []),
         "SKU成本明细": settlement.get("cost_rows", []),
         "物流匹配明细": settlement.get("log_rows", []),

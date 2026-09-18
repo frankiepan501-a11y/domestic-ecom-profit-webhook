@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -21,6 +21,7 @@ async def health():
             "report_create_error_detail": True,
             "tmall_item_export_support": True,
             "tmall_ad_actual_consumption_only": True,
+            "tmall_sku_summary_27_columns": True,
             "douyin_ad_evidence_gate": True,
             "cost_gap_alert_frankie_only": config.COST_GAP_ALERT_FRANKIE_ONLY}
 
