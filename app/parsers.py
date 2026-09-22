@@ -474,12 +474,21 @@ def parse_dy_ads(buf: bytes, filename: str, year_month: str) -> list[dict]:
             return 0.0
 
     if "非赠款消耗(元)" in col:
+        dated_rows = [
+            row for row in rows[1:]
+            if str(value(row, "日期") or "").strip()
+            and str(value(row, "日期") or "").strip() != "总计"
+        ]
+        if not dated_rows:
+            raise ValueError(f"财务流水缺少可核验日期，无法确认属于 {year_month}")
+        if any(not _ym_match(value(row, "日期"), year_month) for row in dated_rows):
+            raise ValueError(f"财务流水包含非 {year_month} 日期，拒绝计入本期广告费")
         total_row = next(
             (row for row in rows[1:] if str(value(row, "日期") or "").strip() == "总计"),
             None,
         )
         if total_row is None:
-            total_row = rows[-1]
+            raise ValueError("财务流水缺少总计行，无法确认广告费汇总金额")
         return [{
             "date": year_month,
             "spend": number(value(total_row, "非赠款消耗(元)")),

@@ -607,6 +607,7 @@ class DouyinP0RegressionTests(unittest.TestCase):
             "消返红包消耗(元)", "立减红包消耗(元)", "共享钱包消耗(元)",
             "共享赠款消耗(元)", "总存入(元)",
         ])
+        sheet.append(["2026-08-01", 22407.48, 22389.99, 17.49, 200, 0, 0, 0, 22701.49])
         sheet.append(["总计", 22407.48, 22389.99, 17.49, 200, 0, 0, 0, 22701.49])
         buf = io.BytesIO()
         workbook.save(buf)
@@ -626,6 +627,32 @@ class DouyinP0RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(200.00, rows[0]["red_packet_spend"], places=2)
         self.assertAlmostEqual(22701.49, rows[0]["deposit"], places=2)
         self.assertEqual("财务流水", rows[0]["source_type"])
+
+    def test_douyin_finance_flow_rejects_wrong_month_summary(self):
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append([
+            "日期", "余额总消耗(元)", "非赠款消耗(元)", "赠款消耗(元)",
+            "消返红包消耗(元)", "立减红包消耗(元)", "共享钱包消耗(元)",
+            "共享赠款消耗(元)", "总存入(元)",
+        ])
+        sheet.append(["2026-09-01", 100, 90, 10, 0, 0, 0, 0, 100])
+        sheet.append(["总计", 100, 90, 10, 0, 0, 0, 0, 100])
+        buf = io.BytesIO()
+        workbook.save(buf)
+
+        parsed = parsers.detect_and_parse(
+            "财务流水.xlsx",
+            buf.getvalue(),
+            "2026-08",
+            "广告",
+            platform="抖音",
+        )
+
+        self.assertEqual("error", parsed["kind"])
+        self.assertIn("包含非 2026-08 日期", parsed["msg"])
 
     def test_douyin_confirmed_expense_policy_reconciles_profit_and_settlement_payback(self):
         settlement = _csv_bytes(
