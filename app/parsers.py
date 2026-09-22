@@ -450,6 +450,82 @@ def parse_dy_refunds(buf: bytes) -> list[dict]:
     return out
 
 
+
+def parse_dy_ads(buf: bytes, filename: str, year_month: str) -> list[dict]:
+    """Parse Douyin ad finance exports.
+
+    Cash spend is the August expense. Gift credit and red packets stay as
+    reconciliation evidence and do not reduce channel contribution margin.
+    """
+    rows = _load_rows(buf, filename)
+    if len(rows) < 2:
+        return []
+    header = [str(value or "").strip() for value in rows[0]]
+    col = {name: index for index, name in enumerate(header) if name}
+
+    def value(row, name):
+        index = col.get(name, -1)
+        return row[index] if 0 <= index < len(row) else None
+
+    def number(raw):
+        try:
+            return float(str(raw or "0").replace(",", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    if "非赠款消耗(元)" in col:
+        total_row = next(
+            (row for row in rows[1:] if str(value(row, "日期") or "").strip() == "总计"),
+            None,
+        )
+        if total_row is None:
+            total_row = rows[-1]
+        return [{
+            "date": year_month,
+            "spend": number(value(total_row, "非赠款消耗(元)")),
+            "gift_spend": (
+                number(value(total_row, "赠款消耗(元)"))
+                + number(value(total_row, "共享赠款消耗(元)"))
+            ),
+            "red_packet_spend": (
+                number(value(total_row, "消返红包消耗(元)"))
+                + number(value(total_row, "立减红包消耗(元)"))
+            ),
+            "deposit": number(value(total_row, "总存入(元)")),
+            "source_type": "财务流水",
+            "source": filename,
+        }]
+
+    if {"交易时间", "消耗金额", "资金类型"}.issubset(col):
+        cash = gift = red_packet = 0.0
+        matched = 0
+        for row in rows[1:]:
+            if not _ym_match(value(row, "交易时间"), year_month):
+                continue
+            matched += 1
+            amount = abs(number(value(row, "消耗金额")))
+            fund_type = str(value(row, "资金类型") or "").strip()
+            fund_source = str(value(row, "资金来源") or "").strip()
+            if fund_type == "非赠款":
+                cash += amount
+            elif "红包" in fund_source:
+                red_packet += amount
+            else:
+                gift += amount
+        if not matched:
+            return []
+        return [{
+            "date": year_month,
+            "spend": cash,
+            "gift_spend": gift,
+            "red_packet_spend": red_packet,
+            "deposit": 0.0,
+            "source_type": "消耗明细",
+            "source": filename,
+        }]
+
+    return []
+
 def parse_dy_platform_fee(buf: bytes, source_name: str, year_month: str = "") -> list[dict]:
     """抖音平台结算 csv. 只算"出账"且非资金转账类 + 按"动账时间" 过滤当月.
     排除场景: 提现/充值/转账/保证金 (商家自己的资金转移, 不是平台费)."""
@@ -989,7 +1065,7 @@ def detect_and_parse(filename: str, buf: bytes, year_month: str, kind_hint: str,
             if kind_hint == "平台费":
                 return {"kind": "平台费", "data": parse_dy_platform_fee(buf, filename, year_month)}
             if kind_hint == "广告":
-                return {"kind": "广告", "data": []}
+                return {"kind": "广告", "data": parse_dy_ads(buf, filename, year_month)}
         elif platform == "小红书":
             if kind_hint == "订单":
                 data, skus = parse_xhs_orders(buf, year_month)

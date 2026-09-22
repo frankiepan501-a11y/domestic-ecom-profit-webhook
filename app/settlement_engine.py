@@ -62,6 +62,9 @@ LOG_HEADER = [
 FEE_HEADER = [
     "平台", "店铺", "月份", "来源文件", "费用类别", "订单号", "金额", "取数字段", "备注",
 ]
+ASSET_HEADER = [
+    "平台", "店铺", "月份", "来源文件", "资产类别", "订单号", "金额", "取数字段", "备注",
+]
 GAP_HEADER = ["P级", "平台", "店铺", "月份", "类别", "对象", "问题", "影响", "建议动作"]
 SOURCE_HEADER = ["平台", "店铺", "资料类型", "文件名", "记录数/匹配数", "状态", "备注"]
 NOTE_HEADER = ["主题", "说明"]
@@ -321,6 +324,18 @@ def _douyin_settlement_file(files: list[dict[str, Any]]) -> dict[str, Any] | Non
     return None
 
 
+def _douyin_order_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    required = {"主订单编号", "商品ID", "商家编码"}
+    out = []
+    for sf in sorted(files, key=lambda item: _fname(item)):
+        fname = _fname(sf)
+        rows = sheet_rows(sf.get("buf") or b"", fname, "Sheet1")
+        headers = {norm(key) for key in rows[0]} if rows else set()
+        if required.issubset(headers):
+            out.append(sf)
+    return out
+
+
 def _douyin_fee_files(files: list[dict[str, Any]]) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
     out: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for sf in files:
@@ -344,6 +359,7 @@ class SettlementReport:
         self.cost_rows: list[list[Any]] = []
         self.log_rows: list[list[Any]] = []
         self.fee_rows: list[list[Any]] = []
+        self.asset_rows: list[list[Any]] = []
         self.gaps: list[list[Any]] = []
         self.source_rows: list[list[Any]] = []
         self.tax_rows: list[list[Any]] = []
@@ -371,6 +387,11 @@ class SettlementReport:
                 amount: float, field: str, note: str) -> None:
         self.fee_rows.append([platform, shop, self.year_month, filename, category, order_id,
                               mny(amount), field, note])
+
+    def add_asset(self, platform: str, shop: str, filename: str, category: str, order_id: str,
+                  amount: float, field: str, note: str) -> None:
+        self.asset_rows.append([platform, shop, self.year_month, filename, category, order_id,
+                                mny(amount), field, note])
 
     def add_cost(self, platform: str, shop: str, order_id: str, sku: str, name: str,
                  qty: float, unit: float, amount: float, source: str) -> None:
@@ -414,7 +435,7 @@ class SettlementReport:
     def allocate_public_product_cost(self, platform: str, shop: str, field: str,
                                      amount: float) -> None:
         """Allocate an untraceable monthly cost by positive SKU net sales, to cents."""
-        if field not in {"platform_fee", "ad_fee", "other"}:
+        if field not in {"platform_fee", "ad_fee", "other", "refund"}:
             raise ValueError(f"unsupported public product cost field: {field}")
         target_cents = int(round(mny(amount) * 100))
         if target_cents == 0:
@@ -446,10 +467,11 @@ class SettlementReport:
 
     def add_monthly(self, platform: str, shop: str, orders: int, qty: float, sales: float,
                     refund: float, platform_fee: float, ad_fee: float, purchase: float,
-                    tail: float, other: float, status: str) -> None:
+                    tail: float, other: float, status: str,
+                    payback_override: float | None = None) -> None:
         net = sales - refund
         profit = net - platform_fee - ad_fee - purchase - tail - other
-        payback = net - platform_fee - ad_fee - other
+        payback = float(payback_override) if payback_override is not None else net - platform_fee - ad_fee - other
         self.monthly.append([
             self.year_month, platform, shop, COMPANY, orders, mny(qty), mny(sales), mny(refund),
             mny(net), mny(platform_fee), mny(ad_fee), mny(purchase), mny(tail), mny(other),
@@ -585,6 +607,7 @@ class SettlementReport:
             "cost_rows": self.cost_rows,
             "log_rows": self.log_rows,
             "fee_rows": self.fee_rows,
+            "asset_rows": self.asset_rows,
             "gap_rows": self.gaps,
             "source_rows": self.source_rows,
             "note_rows": self.notes(),
@@ -597,6 +620,7 @@ class SettlementReport:
                 "SKU成本明细": COST_HEADER,
                 "物流匹配明细": LOG_HEADER,
                 "费用明细汇总": FEE_HEADER,
+                "资产分类明细": ASSET_HEADER,
                 "缺口清单": GAP_HEADER,
                 "资料清单审计": SOURCE_HEADER,
                 "口径说明": NOTE_HEADER,
@@ -952,11 +976,13 @@ def record_douyin_ad_evidence(report: SettlementReport, raw: dict, files: list[d
         if norm(sf.get("kind")) == "广告" or norm(sf.get("attach_field")) == "广告/推广"
     ]
     ad_confirmed_zero = _manifest_confirmed_no_data(raw, "抖音", shop, "广告账单")
-    ad_fee = sum(abs(money(row.get("spend"))) for row in ad_rows)
-    if ad_rows:
-        report.add_source("抖音", shop, "广告账单", "运营上传附件", len(ad_rows), "已读取",
-                          "按广告消耗明细汇总")
-        for row in ad_rows:
+    finance_rows = [row for row in ad_rows if norm(row.get("source_type")) == "财务流水"]
+    selected_ad_rows = finance_rows or ad_rows
+    ad_fee = sum(abs(money(row.get("spend"))) for row in selected_ad_rows)
+    if selected_ad_rows:
+        report.add_source("抖音", shop, "广告账单", "运营上传附件", len(selected_ad_rows), "已读取",
+                          "财务流水优先；仅非赠款现金消耗计费，赠款/红包不计费用")
+        for row in selected_ad_rows:
             report.add_fee("抖音", shop, norm(row.get("source") or "广告账单"), "广告费", "",
                            abs(money(row.get("spend"))), "spend", "按广告消耗明细计入")
     elif ad_confirmed_zero:
@@ -981,18 +1007,33 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                    bill_pool: dict[str, dict[str, Any]], shop: str) -> None:
     files = _files(raw, "抖音", shop)
     settle_sf = _douyin_settlement_file(files)
-    order_sf = _pick_file(files, "订单明细") or _pick_file(files, "订单.csv")
+    order_files = _douyin_order_files(files)
     ad_fee = record_douyin_ad_evidence(report, raw, files, shop)
 
     other_fee = 0.0
+    sales_discount = 0.0
     for sf, tx_rows in _douyin_fee_files(files):
         report.add_source("抖音", shop, "动账/平台费用", _fname(sf), len(tx_rows), "已读取",
-                          "只纳入权益保险/消费者赔付/上门取件运费等经营费用；主体变更资金划转排除")
+                          "退换货运费险、消费者赔付、上门取件运费、抖音月付联合贴息计经营费用；"
+                          "补差价计销售折让；评价有礼保证金计其他流动资产；资金划转排除")
         for r in tx_rows:
             scene = norm(p(r, "动账场景"))
             direction = norm(p(r, "动账方向"))
             amount = money(p(r, "动账金额"))
-            if scene in ("权益保险", "消费者赔付", "上门取件运费") and direction == "出账":
+            note = norm(p(r, "备注") or p(r, "动账备注") or p(r, "摘要"))
+            if scene == "小额打款" and "补差价" in note and direction == "出账":
+                fee = abs(amount)
+                sales_discount += fee
+                report.add_fee("抖音", shop, _fname(sf), "销售折让-补差价", norm(p(r, "订单号")),
+                               fee, "动账金额", "冲减净销售额")
+            elif "评价有礼" in scene and direction in ("出账", "入账"):
+                asset_change = abs(amount) if direction == "出账" else -abs(amount)
+                report.add_asset(
+                    "抖音", shop, _fname(sf), "其他流动资产-抖店评价有礼活动保证金",
+                    norm(p(r, "订单号")), asset_change, "动账金额",
+                    f"{direction}：保证金性质，不计当期毛利费用",
+                )
+            elif scene in ("权益保险", "退换货运费险", "消费者赔付", "上门取件运费", "抖音月付联合贴息") and direction == "出账":
                 fee = abs(amount)
                 other_fee += fee
                 report.add_fee("抖音", shop, _fname(sf), scene, norm(p(r, "订单号")), fee, "动账金额",
@@ -1027,15 +1068,26 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                        "无法按结算月计算销售、退款、平台费和采购成本", action)
         report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee, "缺有效结算订单明细")
         return
-    if not order_sf:
+    if not order_files:
         report.add_gap("P0", "抖音", shop, "资料缺口", shop, "缺订单明细文件",
                        "无法补商家编码和物流单号", "补订单明细后重跑")
         report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee, "缺订单明细")
         return
     settle_rows = [r for r in read_csv(settle_sf.get("buf") or b"") if norm(p(r, "订单号"))]
-    order_rows = sheet_rows(order_sf.get("buf") or b"", _fname(order_sf), "Sheet1")
+    order_rows = []
+    seen_order_rows: set[tuple[str, str, str, str, str]] = set()
     report.add_source("抖音", shop, "结算订单", _fname(settle_sf), len(settle_rows), "已读取", "按结算时间/结算月")
-    report.add_source("抖音", shop, "订单明细", _fname(order_sf), len(order_rows), "已读取", "补ERP_SKU/物流单号/快递信息")
+    for order_sf in order_files:
+        rows = sheet_rows(order_sf.get("buf") or b"", _fname(order_sf), "Sheet1")
+        for row in rows:
+            fingerprint = (
+                norm(p(row, "主订单编号")), norm(p(row, "子订单编号")),
+                norm(p(row, "商品ID")), norm(p(row, "商家编码")), norm(p(row, "快递信息")),
+            )
+            if fingerprint not in seen_order_rows:
+                seen_order_rows.add(fingerprint)
+                order_rows.append(row)
+        report.add_source("抖音", shop, "订单明细", _fname(order_sf), len(rows), "已读取", "多月份订单文件合并并去重")
     by_order_product: dict[str, list[dict[str, Any]]] = {}
     by_order: dict[str, list[dict[str, Any]]] = {}
     for r in order_rows:
@@ -1052,9 +1104,14 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
             report.add_source("抖音", shop, "涉税信息", fname, count, "已读取",
                               "用于后续税务A/B核对；本月毛利不重复计销售服务收入")
             report.add_tax("抖音", shop, fname, "涉税信息", count, "已读取", "已读入涉税资料，P0未重复计入毛利收入")
-    sales_total = refund_total = qty_total = platform_fee = purchase_total = tail_total = payback = 0.0
+    sales_total = qty_total = platform_fee = purchase_total = tail_total = payback = 0.0
+    refund_total = sales_discount
     counted_waybills: set[str] = set()
     recorded_sku_confirmations: set[tuple[str, str]] = set()
+    settlement_key_counts: dict[str, int] = defaultdict(int)
+    settlement_key_cursor: dict[str, int] = defaultdict(int)
+    for row in settle_rows:
+        settlement_key_counts[f"{norm(p(row, '订单号'))}|{norm(p(row, '商品ID'))}"] += 1
     for r in settle_rows:
         order_id = norm(p(r, "订单号"))
         product_id = norm(p(r, "商品ID"))
@@ -1063,11 +1120,14 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         income = money(p(r, "收入合计"))
         settle = money(p(r, "结算金额"))
         pf = abs(money(p(r, "平台服务费")))
+        commission = abs(money(p(r, "达人佣金")))
         offsite = abs(money(p(r, "站外推广费")))
-        platform_fee += pf + offsite
+        platform_fee += pf + commission + offsite
         payback += settle
         if pf:
             report.add_fee("抖音", shop, _fname(settle_sf), "平台服务费", order_id, pf, "平台服务费", "计入平台费用")
+        if commission:
+            report.add_fee("抖音", shop, _fname(settle_sf), "达人佣金", order_id, commission, "达人佣金", "计入平台费用")
         if offsite:
             report.add_fee("抖音", shop, _fname(settle_sf), "站外推广费", order_id, offsite, "站外推广费", "计入平台费用")
         is_income = typ == "已结算"
@@ -1078,6 +1138,11 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         elif is_refund:
             refund_total += abs(income if income else settle)
         lines = pick_dy_lines(by_order_product, by_order, order_id, product_id)
+        settlement_key = f"{order_id}|{product_id}"
+        if len(lines) > 1 and settlement_key_counts[settlement_key] >= len(lines):
+            cursor = settlement_key_cursor[settlement_key]
+            lines = [lines[min(cursor, len(lines) - 1)]]
+            settlement_key_cursor[settlement_key] += 1
         skus = sorted({norm(p(x, "商家编码")) for x in lines if norm(p(x, "商家编码"))})
         sku = skus[0] if skus else ""
         if lines and not sku:
@@ -1102,15 +1167,25 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
         net_qty = qty if is_income else (-abs(qty) if is_refund else 0.0)
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
         name = erp_display_name(sku, cost_name)
-        purchase = max(net_qty * unit, 0.0)
-        if (is_income or is_refund) and net_qty > 0:
+        unshipped_refund = (
+            is_income and bool(lines)
+            and all(not parse_douyin_express(p(line, "快递信息"))
+                    and "退款成功" in norm(p(line, "售后状态"))
+                    and any(x in norm(p(line, "订单状态")) for x in ("关闭", "取消"))
+                    for line in lines)
+        )
+        purchase = 0.0 if unshipped_refund else max(net_qty * unit, 0.0)
+        if unshipped_refund:
+            report.add_log("抖音", shop, order_id, "", "", "", 0, "", "",
+                           "订单关闭且退款成功，未发货", "无需运费")
+        if (is_income or is_refund) and net_qty > 0 and not unshipped_refund:
             if sku and unit <= 0:
                 report.add_gap("P0", "抖音", shop, "采购成本", sku, "采购成本表未匹配或成本为0",
                                "毛利会虚高", "维护产品采购成本台后重跑")
             purchase_total += purchase
             report.add_cost("抖音", shop, order_id, sku, name, net_qty, unit, purchase, cost_src)
         tail_for_order = 0.0
-        if is_income:
+        if is_income and not unshipped_refund:
             express_items: list[dict[str, Any]] = []
             for line in lines:
                 express_items.extend(parse_douyin_express(p(line, "快递信息")))
@@ -1144,13 +1219,15 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
             net = income if is_income else -abs(income if income else settle)
             report.add_product("抖音", shop, sku, name, qty if is_income else 0.0,
                                abs(qty) if is_refund else 0.0, income if is_income else 0.0,
-                               abs(net) if is_refund else 0.0, pf + offsite, 0.0, purchase,
+                               abs(net) if is_refund else 0.0, pf + commission + offsite, 0.0, purchase,
                                tail_for_order, 0.0)
+    report.allocate_public_product_cost("抖音", shop, "refund", sales_discount)
     report.allocate_public_product_cost("抖音", shop, "ad_fee", ad_fee)
     report.allocate_public_product_cost("抖音", shop, "other", other_fee)
     status = "可作为自动化对比基准" if report.gap_count("抖音", shop, "P0") == 0 else "存在P0缺口-待补后重跑"
     report.add_monthly("抖音", shop, len(settle_rows), qty_total, sales_total, refund_total,
-                       platform_fee, ad_fee, purchase_total, tail_total, other_fee, status)
+                       platform_fee, ad_fee, purchase_total, tail_total, other_fee, status,
+                       payback_override=payback)
 
 
 def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[str, Any]],

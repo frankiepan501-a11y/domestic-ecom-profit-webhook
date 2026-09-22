@@ -1,3 +1,4 @@
+import csv
 import io
 import sys
 import unittest
@@ -10,6 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import parsers, settlement_engine, task_runner
 
+
+def _csv_bytes(headers, rows):
+    buf = io.StringIO(newline="")
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8-sig")
 
 def workbook_bytes(title, headers, values):
     wb = openpyxl.Workbook()
@@ -586,6 +594,173 @@ class SettlementP0LedgerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("其他", create.await_args_list[0].args[1])
         self.assertEqual("物流账单缺失", create.await_args_list[1].args[1])
 
+
+
+class DouyinP0RegressionTests(unittest.TestCase):
+    def test_douyin_finance_flow_uses_cash_spend_and_keeps_gifts_as_memo(self):
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append([
+            "日期", "余额总消耗(元)", "非赠款消耗(元)", "赠款消耗(元)",
+            "消返红包消耗(元)", "立减红包消耗(元)", "共享钱包消耗(元)",
+            "共享赠款消耗(元)", "总存入(元)",
+        ])
+        sheet.append(["总计", 22407.48, 22389.99, 17.49, 200, 0, 0, 0, 22701.49])
+        buf = io.BytesIO()
+        workbook.save(buf)
+
+        parsed = parsers.detect_and_parse(
+            "财务流水.xlsx",
+            buf.getvalue(),
+            "2026-08",
+            "广告",
+            platform="抖音",
+        )
+        rows = parsed["data"]
+
+        self.assertEqual(1, len(rows))
+        self.assertAlmostEqual(22389.99, rows[0]["spend"], places=2)
+        self.assertAlmostEqual(17.49, rows[0]["gift_spend"], places=2)
+        self.assertAlmostEqual(200.00, rows[0]["red_packet_spend"], places=2)
+        self.assertAlmostEqual(22701.49, rows[0]["deposit"], places=2)
+        self.assertEqual("财务流水", rows[0]["source_type"])
+
+    def test_douyin_confirmed_expense_policy_reconciles_profit_and_settlement_payback(self):
+        settlement = _csv_bytes(
+            ["订单号", "结算单类型", "收入合计", "结算金额", "商品ID", "商品数量", "平台服务费", "达人佣金", "站外推广费"],
+            [["10001", "已结算", 100, 75, "P1", 1, 5, 15, 5]],
+        )
+        orders = _csv_bytes(
+            ["主订单编号", "商品ID", "商家编码", "商品数量", "订单状态", "售后状态", "快递信息"],
+            [["10001", "P1", "SKU-A", 1, "已完成", "", "SF10001-顺丰速运"]],
+        )
+        account = _csv_bytes(
+            ["动账时间", "动账方向", "动账场景", "动账金额", "备注"],
+            [
+                ["2026-08-01", "出账", "退换货运费险", 2, ""],
+                ["2026-08-01", "出账", "消费者赔付", 3, ""],
+                ["2026-08-01", "出账", "抖音月付联合贴息", 4, ""],
+                ["2026-08-01", "出账", "小额打款", 40, "补差价"],
+                ["2026-08-01", "出账", "评价有礼", 15, ""],
+                ["2026-08-01", "出账", "巨量千川充值", 100, ""],
+                ["2026-08-01", "出账", "提现", 50, ""],
+            ],
+        )
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "结算明细.csv", "buf": settlement, "attach_field": "结算明细"},
+                {"platform": "抖音", "shop": "宝空店", "fname": "订单明细.csv", "buf": orders, "attach_field": "订单明细"},
+                {"platform": "抖音", "shop": "宝空店", "fname": "动账明细.csv", "buf": account, "attach_field": "动账明细"},
+            ],
+            "ads": [
+                {
+                    "platform": "抖音",
+                    "shop": "宝空店",
+                    "source_type": "财务流水",
+                    "spend": 10,
+                    "gift_spend": 2,
+                    "red_packet_spend": 3,
+                    "source": "财务流水.xlsx",
+                }
+            ],
+            "logistics": [{"tracking": "SF10001", "amount": 8, "source": "顺丰账单"}],
+        }
+
+        report = settlement_engine.compute(
+            raw,
+            {"SKU-A": {"unit_cost": 10, "name": "测试产品", "source": "成本台"}},
+            "2026-08",
+        )
+        monthly = next(row for row in report["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])
+
+        self.assertAlmostEqual(100.00, monthly[6], places=2)
+        self.assertAlmostEqual(40.00, monthly[7], places=2)
+        self.assertAlmostEqual(60.00, monthly[8], places=2)
+        self.assertAlmostEqual(25.00, monthly[9], places=2)
+        self.assertAlmostEqual(10.00, monthly[10], places=2)
+        self.assertAlmostEqual(10.00, monthly[11], places=2)
+        self.assertAlmostEqual(8.00, monthly[12], places=2)
+        self.assertAlmostEqual(9.00, monthly[13], places=2)
+        self.assertAlmostEqual(-2.00, monthly[14], places=2)
+        self.assertAlmostEqual(75.00, monthly[16], places=2)
+        self.assertFalse([row for row in report["gap_rows"] if row[0] == "P0" and row[2] == "抖音宝空"])
+        self.assertEqual(
+            [["抖音", "抖音宝空", "2026-08", "动账明细.csv",
+              "其他流动资产-抖店评价有礼活动保证金", "", 15.0, "动账金额",
+              "出账：保证金性质，不计当期毛利费用"]],
+            report["asset_rows"],
+        )
+
+    def test_douyin_same_product_id_multi_sku_order_costs_each_settlement_line(self):
+        settlement = _csv_bytes(
+            ["订单号", "结算单类型", "收入合计", "结算金额", "商品ID", "商品数量", "平台服务费", "达人佣金", "站外推广费"],
+            [
+                ["6928676009172237729", "已结算", 381.09, 316.31, "P1", 1, 7.62, 57.16, 0],
+                ["6928676009172237729", "已结算", 256.91, 213.23, "P1", 1, 5.14, 38.54, 0],
+            ],
+        )
+        orders = _csv_bytes(
+            ["主订单编号", "商品ID", "商家编码", "商品数量", "订单状态", "售后状态", "快递信息"],
+            [
+                ["6928676009172237729", "P1", "PK02-S2", 1, "已完成", "", "76967441851947-顺丰速运"],
+                ["6928676009172237729", "P1", "PK01pro", 1, "已完成", "", "76967471561416-顺丰速运"],
+            ],
+        )
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "结算明细.csv", "buf": settlement, "attach_field": "结算明细"},
+                {"platform": "抖音", "shop": "宝空店", "fname": "订单明细.csv", "buf": orders, "attach_field": "订单明细"},
+            ],
+            "ads": [],
+            "logistics": [
+                {"tracking": "76967441851947", "amount": 5, "source": "顺丰账单"},
+                {"tracking": "76967471561416", "amount": 6, "source": "顺丰账单"},
+            ],
+        }
+
+        report = settlement_engine.compute(
+            raw,
+            {
+                "PK02-S2": {"unit_cost": 173.73, "name": "产品A", "source": "成本台"},
+                "PK01pro": {"unit_cost": 100.79, "name": "产品B", "source": "成本台"},
+            },
+            "2026-08",
+        )
+
+        self.assertAlmostEqual(274.52, next(row for row in report["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])[11], places=2)
+        self.assertEqual({"PK02-S2", "PK01pro"}, {row[4] for row in report["cost_rows"]})
+        self.assertFalse([row for row in report["gap_rows"] if row[4] == "采购成本"])
+
+    def test_douyin_unshipped_refund_has_no_purchase_cost_or_freight_gap(self):
+        settlement = _csv_bytes(
+            ["订单号", "结算单类型", "收入合计", "结算金额", "商品ID", "商品数量", "平台服务费", "达人佣金", "站外推广费"],
+            [["6955468382802745067", "已结算", 1, 1, "P1", 1, 0, 0, 0]],
+        )
+        orders = _csv_bytes(
+            ["主订单编号", "商品ID", "商家编码", "商品数量", "订单状态", "售后状态", "快递信息"],
+            [["6955468382802745067", "P1", "PK02-S3", 1, "已关闭", "退款成功", "-"]],
+        )
+        raw = {
+            "source_files": [
+                {"platform": "抖音", "shop": "宝空店", "fname": "结算明细.csv", "buf": settlement, "attach_field": "结算明细"},
+                {"platform": "抖音", "shop": "宝空店", "fname": "订单明细.csv", "buf": orders, "attach_field": "订单明细"},
+            ],
+            "ads": [],
+            "logistics": [],
+        }
+
+        report = settlement_engine.compute(
+            raw,
+            {"PK02-S3": {"unit_cost": 173.73, "name": "产品C", "source": "成本台"}},
+            "2026-08",
+        )
+
+        self.assertAlmostEqual(0.00, next(row for row in report["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])[11], places=2)
+        self.assertAlmostEqual(0.00, next(row for row in report["monthly_rows"] if row[1:3] == ["抖音", "抖音宝空"])[12], places=2)
+        self.assertFalse([row for row in report["gap_rows"] if row[4] == "物流成本"])
+        self.assertTrue(any(row[3] == "6955468382802745067" and row[11] == "无需运费" for row in report["log_rows"]))
 
 if __name__ == "__main__":
     unittest.main()
