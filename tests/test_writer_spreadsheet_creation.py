@@ -48,7 +48,7 @@ class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
         expected = [
             "国内电商平台名称", "运营人员", "国家", "站点", "月份", "MSKU", "中文名称",
             "销量", "退款数量", "销售额(RMB)", "退款(RMB)", "平台服务费(RMB)",
-            "广告费(RMB)", "采购成本(RMB)", "尾程费用(RMB)", "其他成本(RMB)",
+            "广告费(RMB)", "采购成本(RMB)", "物流运费(RMB)", "其他成本(RMB)",
             "毛利润(RMB)", "毛利率",
         ]
         self.assertEqual(expected, writer.HEADERS["产品毛利_月度"])

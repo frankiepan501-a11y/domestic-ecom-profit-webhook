@@ -33,22 +33,22 @@ DOUYIN_CONFIRMED_PRODUCT_SKU = {
 
 MONTHLY_HEADER = [
     "月份", "平台", "店铺", "主体", "销售订单数", "销量", "销售额(RMB)", "退款(RMB)",
-    "净销售额(RMB)", "平台费用(RMB)", "广告费(RMB)", "采购成本(RMB)", "尾程费用(RMB)",
+    "净销售额(RMB)", "平台费用(RMB)", "广告费(RMB)", "采购成本(RMB)", "物流运费(RMB)",
     "其他费用(RMB)", "试算毛利(RMB)", "试算毛利率", "结算回款/净回款(RMB)",
     "P0缺口数", "P1注意项", "状态",
 ]
 PRODUCT_HEADER = [
     "国内电商平台名称", "运营人员", "国家", "站点", "月份", "MSKU", "中文名称", "销量",
     "退款数量", "销售额(RMB)", "退款(RMB)", "平台服务费(RMB)", "广告费(RMB)",
-    "采购成本(RMB)", "尾程费用(RMB)", "其他成本(RMB)", "毛利润(RMB)", "毛利率",
+    "采购成本(RMB)", "物流运费(RMB)", "其他成本(RMB)", "毛利润(RMB)", "毛利率",
 ]
 SKU_SUMMARY_HEADER = [
     "店铺", "月份", "ERP SKU", "中文名称", "销量", "退款折算数量",
     "净成本数量", "销售额(RMB)", "退款(RMB)", "净销售额(RMB)",
     "平台费用分摊(RMB)", "广告费分摊(RMB)", "采购成本(RMB)",
-    "尾程费用(RMB)", "其他费用(RMB)", "试算毛利(RMB)", "毛利率",
+    "物流运费(RMB)", "其他费用(RMB)", "试算毛利(RMB)", "毛利率",
     "净回款(RMB)", "回款率", "退款率", "平台费用率", "广告费率",
-    "采购成本率", "尾程费用率", "采购成本单价(RMB)", "成本来源",
+    "采购成本率", "物流运费率", "采购成本单价(RMB)", "成本来源",
     "店铺净销售额分摊权重",
 ]
 COST_HEADER = [
@@ -56,7 +56,7 @@ COST_HEADER = [
     "采购成本", "成本来源",
 ]
 LOG_HEADER = [
-    "平台", "店铺", "月份", "订单号", "子订单号", "运单号", "承运商", "分摊尾程费用",
+    "平台", "店铺", "月份", "订单号", "子订单号", "运单号", "承运商", "分摊物流运费",
     "账单文件/API", "账单sheet", "来源", "状态",
 ]
 FEE_HEADER = [
@@ -593,8 +593,8 @@ class SettlementReport:
             ["物流", "按结算订单集合映射订单明细物流单号，再匹配前月/当月顺丰与中通账单；顺丰账单未命中时尝试EXP_RECE_QUERY_SFWAYBILL API。"],
             ["采购成本", "采购成本按ERP_SKU匹配产品采购成本台，优先采购成本(财务核算)，为空或0时用采购成本(ERP)，再兜底领星cg_price。"],
             ["中文名称", "财务产品表固定显示ERP中文品名；平台商品标题只保留在订单明细，不参与产品汇总和成本核对。"],
-            ["退款折算数量", "按结算订单退款金额/销售额×销量折算，用于冲减净成本数量；不是实际退回仓库件数，可为小数。"],
-            ["尾程费用", "本表为发给消费者这一段的运单物流费用，按运单分摊到订单和SKU；不含头程或仓储。"],
+            ["退款折算数量", "按同一子订单退款金额/销售额×销量折算，仅展示退款规模，可为小数；采购成本只对已确认退货入库或未发货取消的全额退款整件抵减；部分退款不抵减。"],
+            ["物流运费", "本表为发给消费者这一段的运单物流费用，按运单分摊到订单和SKU；不含头程或仓储。"],
             ["SKU毛利汇总", "天猫平台费和广告按店铺SKU净销售额占比分摊到分，尾差归净销售额最高SKU；逐店合计须与月度毛利试算一致。"],
             ["京东", "京东按到账/结算明细和无结算确认输出零销售或费用行，不静默跳过。"],
         ]
@@ -838,28 +838,59 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
     report.add_source("天猫", shop, "物流账单池", "顺丰/中通 前后月账单+API", len(shop_bill_pool), "已读取",
                       "按运单号匹配，顺丰缺口尝试API")
 
-    lines: list[dict[str, Any]] = []
-    waybill_groups: dict[str, list[int]] = defaultdict(list)
+    # Settlement exports sales and refunds as separate rows for one suborder.
+    # Merge first so the refund row cannot create a second purchased unit.
+    grouped: dict[str, dict[str, Any]] = {}
     for r in trade_rows:
         sub = norm(p(r, "子订单号"))
-        order = order_by_sub.get(sub)
-        main = norm(p(r, "订单号"))
-        sku = norm(p(order, "商家编码") or p(order, "外部系统编号"))
-        qty = money(p(r, "数量"))
+        if not sub:
+            continue
         sales = money(p(r, "订单实际金额（元）"))
         refund = money(p(r, "退款金额（元）"))
+        entry = grouped.setdefault(sub, {"sub": sub, "main": norm(p(r, "订单号")),
+                                         "sales": 0.0, "refund": 0.0, "qty": 0.0})
+        entry["sales"] += sales
+        entry["refund"] += refund
+        if sales > 0:
+            entry["qty"] += money(p(r, "数量"))
+
+    lines: list[dict[str, Any]] = []
+    waybill_groups: dict[str, list[int]] = defaultdict(list)
+    for trade in grouped.values():
+        sub = trade["sub"]
+        order = order_by_sub.get(sub)
+        main = trade["main"]
+        sku = norm(p(order, "商家编码") or p(order, "外部系统编号"))
+        qty = trade["qty"]
+        sales = trade["sales"]
+        refund = trade["refund"]
+        # Refund-equivalent quantity is for display only. Partial refunds
+        # retain the full unit purchase cost; full refunds reverse whole units.
         refund_qty = min(qty, qty * refund / sales) if sales > 0 and refund > 0 else 0.0
-        net_qty = max(qty - refund_qty, 0.0)
+        refund_scope = (raw.get("tmall_refund_scope") or {}).get(sub, "")
+        full_refund = refund_scope == "全额退款" or (sales > 0 and refund >= sales)
+        return_status = (raw.get("tmall_cost_return_status") or {}).get(sub, "")
+        confirmed_return = return_status in {"已退货入库", "已退回签收", "未发货取消"}
+        if full_refund and not confirmed_return:
+            report.add_gap("P0", "天猫", shop, "采购成本", sub,
+                           "全额退款但无退货入库或未发货取消凭证",
+                           "不能确认是否扣减整件采购成本", "补售后退货入库/取消凭证后重跑")
+        full_refund_qty = qty if full_refund and confirmed_return else 0.0
+        cost_qty = max(qty - full_refund_qty, 0.0)
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
         name = erp_display_name(sku, cost_name)
-        purchase = net_qty * unit
+        purchase = cost_qty * unit
+        if sales <= 0 and refund > 0:
+            report.add_gap("P0", "天猫", shop, "采购成本", sub,
+                           "当月只有退款、没有原销售行，无法确定应冲回的采购成本件数",
+                           "采购成本待核对", "补原销售订单及全额/部分退款凭证")
         if not sku:
             report.add_gap("P0", "天猫", shop, "采购成本", main, "订单无法取得商家编码/外部系统编号",
                            "无法映射采购成本", "补订单明细商家编码或SKU对照表")
-        elif net_qty > 0 and unit <= 0:
+        elif cost_qty > 0 and unit <= 0:
             report.add_gap("P0", "天猫", shop, "采购成本", sku, "采购成本表未匹配或成本为0",
                            "毛利会虚高", "维护产品采购成本台后重跑")
-        report.add_cost("天猫", shop, main, sku, name, net_qty, unit, purchase, cost_src)
+        report.add_cost("天猫", shop, main, sku, name, cost_qty, unit, purchase, cost_src)
         waybill = norm(p(order, "物流单号")).removeprefix("No:")
         carrier = norm(p(order, "物流公司"))
         line = {
@@ -885,13 +916,13 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
                                lines[idx]["carrier"], 0, "", "", "未命中", "P0-物流缺口")
                 report.add_gap("P0", "天猫", shop, "物流成本", waybill,
                                "结算订单运单未在前后月账单池命中，顺丰API也未返回费用",
-                               "尾程费用缺失", "补后续账单或核实运单/API权限后重跑")
+                               "物流运费缺失", "补后续账单或核实运单/API权限后重跑")
     for line in lines:
         if not line["waybill"]:
             report.add_log("天猫", shop, line["order"], line["sub"], "", line["carrier"],
                            0, "", "", "缺物流单号", "P0-物流缺口")
             report.add_gap("P0", "天猫", shop, "物流成本", line["order"],
-                           "结算订单订单明细物流单号为空", "无法匹配尾程费用", "补完整订单明细/物流单号")
+                           "结算订单订单明细物流单号为空", "无法匹配物流运费", "补完整订单明细/物流单号")
 
     sales_total = sum(float(x["sales"]) for x in lines)
     refund_total = sum(float(x["refund"]) for x in lines)
@@ -1191,7 +1222,7 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                 express_items.extend(parse_douyin_express(p(line, "快递信息")))
             if not express_items:
                 report.add_gap("P0", "抖音", shop, "物流成本", order_id, "结算收入订单未解析到有效运单号",
-                               "尾程费用缺失", "补订单明细快递信息/物流单号")
+                               "物流运费缺失", "补订单明细快递信息/物流单号")
                 report.add_log("抖音", shop, order_id, "", "", "", 0, "", "", "未解析到运单", "P0-物流缺口")
             local: set[str] = set()
             for ex in express_items:
@@ -1214,7 +1245,7 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                     report.add_log("抖音", shop, order_id, "", wb, ex["carrier"], 0, "", "", "未命中", "P0-物流缺口")
                     report.add_gap("P0", "抖音", shop, "物流成本", wb,
                                    f"{ex['carrier']} 运单未在前后月账单池命中，顺丰API也未返回费用",
-                                   "尾程费用缺失", "补后续账单或核实运单/API权限后重跑")
+                                   "物流运费缺失", "补后续账单或核实运单/API权限后重跑")
         if is_income or is_refund:
             net = income if is_income else -abs(income if income else settle)
             report.add_product("抖音", shop, sku, name, qty if is_income else 0.0,
@@ -1355,7 +1386,7 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
                     )
                 else:
                     report.add_gap("P0", "小红书", shop, "物流成本", order_id, "结算收入订单快递单号为空",
-                                   "尾程费用缺失", "补订单查询快递单号")
+                                   "物流运费缺失", "补订单查询快递单号")
                     report.add_log("小红书", shop, order_id, "", "", carrier, 0, "", "", "缺快递单号", "P0-物流缺口")
             else:
                 bill = bill_pool.get(wb)
@@ -1373,7 +1404,7 @@ def process_xhs(report: SettlementReport, raw: dict, cost_map: dict[str, dict[st
                     report.add_log("小红书", shop, order_id, "", wb, carrier, 0, "", "", "未命中", "P0-物流缺口")
                     report.add_gap("P0", "小红书", shop, "物流成本", wb,
                                    f"{carrier} 运单未在前后月账单池命中，顺丰API也未返回费用",
-                                   "尾程费用缺失", "补后续账单或核实运单/API权限后重跑")
+                                   "物流运费缺失", "补后续账单或核实运单/API权限后重跑")
         if is_income or is_refund:
             product_lines.append({
                 "sku": sku, "name": name, "is_income": is_income, "is_refund": is_refund,

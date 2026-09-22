@@ -206,12 +206,31 @@ async def _load_finance_cost_map(sku_set: set[str], lx_data: dict[str, dict]) ->
     return cost_map
 
 
+def _merge_tmall_refund_cost_evidence(raw: dict, rows: list[dict]) -> None:
+    """Extract deterministic purchase-cost evidence from the official refund export."""
+    for row in rows:
+        order_id = str(row.get("main_oid") or "").strip()
+        scope = str(row.get("refund_scope") or "").strip()
+        refund_status = str(row.get("status") or "").strip()
+        goods_status = str(row.get("goods_status") or "").strip()
+        return_logistics = str(row.get("return_logistics") or "").strip()
+        if not order_id or scope != "全额退款" or refund_status != "退款成功":
+            continue
+        # One order can also have a separate partial shipping refund. Full-refund
+        # evidence wins and a later partial row must not overwrite it.
+        raw["tmall_refund_scope"][order_id] = "全额退款"
+        if goods_status == "未发货":
+            raw["tmall_cost_return_status"][order_id] = "未发货取消"
+        elif goods_status == "已寄回" and return_logistics == "已签收":
+            raw["tmall_cost_return_status"][order_id] = "已退回签收"
+
 async def collect_raw_data(year_month: str) -> dict:
     """v0.2: 每条数据带 platform/shop 标签. 白名单外店铺记入 skipped."""
     sources = await find_month_sources(year_month)
     raw = {"orders": [], "refunds": [], "plat_fees": [], "ads": [], "logistics": [],
            "source_files": [], "sku_set": set(), "errors": [], "skipped_shops": [],
-           "shop_keys": set()}
+           "shop_keys": set(), "tmall_refund_scope": {},
+           "tmall_cost_return_status": {}}
 
     for rec in sources:
         f = rec["_fields_resolved"]
@@ -258,6 +277,8 @@ async def collect_raw_data(year_month: str) -> dict:
                         raw["sku_set"].update(res.get("sku_set", []))
                     elif kind == "退款":
                         raw["refunds"].extend(res["data"])
+                        if platform in ("天猫", "淘宝"):
+                            _merge_tmall_refund_cost_evidence(raw, res["data"])
                     elif kind == "平台费":
                         raw["plat_fees"].extend(res["data"])
                     elif kind == "广告":

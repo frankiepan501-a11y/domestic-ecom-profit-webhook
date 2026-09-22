@@ -294,7 +294,7 @@ def _store_line(row: dict) -> str:
     margin = row.get("gross_margin", row.get("试算毛利率"))
     ad_fee = row.get("ad_fee", row.get("广告费(RMB)"))
     cost = row.get("procurement_cost", row.get("采购成本(RMB)"))
-    logistics = row.get("logistics_cost", row.get("尾程费用(RMB)"))
+    logistics = row.get("logistics_cost", row.get("物流运费(RMB)", row.get("尾程费用(RMB)")))
     status = row.get("status", row.get("状态")) or "已生成"
     return (
         f"- {shop}：净销售额 {_money(net_sales)}；毛利 {_money(gross_profit)}"

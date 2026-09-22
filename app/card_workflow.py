@@ -900,7 +900,7 @@ async def _platform_report_summary(output: dict, platform: str) -> dict:
         gross_profit = _to_float(row.get("试算毛利(RMB)"))
         margin = _ratio_value(row.get("试算毛利率"))
         cost = _to_float(row.get("采购成本(RMB)"))
-        logistics = _to_float(row.get("尾程费用(RMB)"))
+        logistics = _to_float(row.get("物流运费(RMB)", row.get("尾程费用(RMB)")))
         orders = _to_float(row.get("销售订单数"))
         p0_count = _to_float(row.get("P0缺口数"))
         status = _ftext(row.get("状态"))
