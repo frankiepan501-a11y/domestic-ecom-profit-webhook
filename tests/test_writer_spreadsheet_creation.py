@@ -87,6 +87,7 @@ class SpreadsheetCreationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["tmall_ad_actual_consumption_only"])
         self.assertTrue(payload["tmall_sku_summary_27_columns"])
         self.assertTrue(payload["douyin_ad_evidence_gate"])
+        self.assertTrue(payload["douyin_202608_reconciliation_fix"])
 
     def test_legacy_result_does_not_fall_back_to_marketplace_title(self):
         result = engine.compute(
