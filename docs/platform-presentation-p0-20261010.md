@@ -1,4 +1,4 @@
-# 抖音/天猫输出格式 P0：验证通过，待云端部署
+# 抖音/天猫输出格式 P0：已部署并完成线上核验
 
 ## 范围与版本
 
@@ -24,8 +24,10 @@
 - 飞书API适配：URL富文本正规化；列宽1-based；筛选读取data.sheet_filter_info，已有筛选PUT更新；负数用文字颜色实现。
 - 证据目录：D:/Documents/财务与资产/.codex/plan/2026-10-07-domestic-september-materials/；文件 format-replay-20261010.json、live-format-smoke-20261010.json及对应两个脚本。
 
-## 剩余 P0 / 阻塞
+## 部署及最终核验
 
-Zeabur环境凭据返回ERROR_INVALID_TOKEN，CLI保存凭据只读请求401 Unauthorized。已请求用户恢复本机登录，无需在聊天发送密钥。当前未push、未部署。2026-10-10最终health回读仍version=0.4.6；本地候选目标0.4.7。
+2026-10-10已将修复提交2668d10推送到远程master。Zeabur控制台核对生产项目n8n-aments、服务domestic-ecom-profit、来源同仓库master，自动构建部署ID 6ac9d313fb15905b77d52dd8，状态“运行中”。线上/health回读status=ok、version=0.4.7、report_presentation_version=2026-10-10.v1、platform_presentation_gate=true；新版运行日志中GET /health及POST /profit/poll-and-run均200。
 
-恢复认证后，先核生产n8n-aments准确服务与当前源码版本，再推送部署，核线上版本、格式标识及隔离产物。只有线上验证完成才可称P0闭环。不得顺手改九月账目、重新发卡或代替财务审批。
+隔离飞书样本的两平台首页及全页回读、浏览器显示验收在上线前使用同一提交完成。未在正式九月报表上重跑或重发终审卡；现有两平台仍等待财务终审。原工作目录未推送的bd96164/0d67e81及未提交任务文件未混入本次远程master，后续处理时须单独审阅。
+
+此节为部署后本地更新；本次不再为纯文档说明触发第二次服务部署。
