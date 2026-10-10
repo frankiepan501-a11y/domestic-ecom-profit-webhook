@@ -112,8 +112,11 @@ async def _grant_report_collaborators(token: str) -> dict:
     return summary
 
 
-async def create_report_spreadsheet(year_month: str) -> tuple[str, dict[str, str]]:
-    title = f"国内电商毛利表-{year_month.replace('-', '/')}"
+async def create_report_spreadsheet(year_month: str, platforms=None) -> tuple[str, dict[str, str]]:
+    platforms=sorted(set(platforms or []))
+    scope=platforms[0] if len(platforms)==1 else '国内电商'
+    detail=('与'.join(platforms)+'分平台审核｜') if len(platforms)>1 else ''
+    title = f"{scope}{year_month}毛利报表｜{detail}待财务终审"
     folder_token = (config.DOMESTIC_ECOM_REPORT_FOLDER_TOKEN or "").strip() or None
     res = await feishu.sheets_create(title, folder_token=folder_token)
     token = (

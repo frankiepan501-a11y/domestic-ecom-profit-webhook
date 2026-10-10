@@ -363,6 +363,8 @@ class SettlementReport:
         self.gaps: list[list[Any]] = []
         self.source_rows: list[list[Any]] = []
         self.tax_rows: list[list[Any]] = []
+        self.trace_rows: list[dict[str, Any]] = []
+        self.source_baselines: list[dict[str, Any]] = []
         self.product: dict[tuple[str, str, str], dict[str, float | str]] = {}
 
     def add_gap(self, level: str, platform: str, shop: str, category: str, obj: str,
@@ -601,6 +603,8 @@ class SettlementReport:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "trace_rows": self.trace_rows,
+            "source_baselines": self.source_baselines,
             "monthly_rows": self.monthly,
             "product_rows": self.product_rows(),
             "sku_summary_rows": self.sku_summary_rows(),
@@ -814,6 +818,15 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
         return
     order_files = [sf for sf in files if _is_order_detail_export(_fname(sf))]
     trade_rows = read_csv(trade_sf.get("buf") or b"", prefer_gbk=True)
+    from . import source_audit
+    report.source_baselines.append({
+        'platform':'天猫', 'shop':shop, 'source':_fname(trade_sf),
+        'filter':'原始交易货款导出全部数据行；收入行数量；本结算月',
+        'qty':sum(money(p(r,'数量')) for r in trade_rows if money(p(r,'订单实际金额（元）'))>0),
+        'sales':sum(money(p(r,'订单实际金额（元）')) for r in trade_rows),
+        'refund':sum(money(p(r,'退款金额（元）')) for r in trade_rows),
+        **source_audit.tmall(files,report.year_month,trade_rows),
+    })
     order_rows: list[dict[str, Any]] = []
     for sf in order_files:
         rows = sheet_rows(sf.get("buf") or b"", _fname(sf), "export") or sheet_rows(sf.get("buf") or b"", _fname(sf))
@@ -851,6 +864,7 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
                                          "sales": 0.0, "refund": 0.0, "qty": 0.0})
         entry["sales"] += sales
         entry["refund"] += refund
+        entry['date'] = norm(p(r,'下单时间') or p(r,'订单创建时间')) or entry.get('date','')
         if sales > 0:
             entry["qty"] += money(p(r, "数量"))
 
@@ -898,6 +912,12 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
             "refund_qty": refund_qty, "sales": sales, "refund": refund,
             "purchase": purchase, "waybill": waybill, "carrier": carrier, "tail": 0.0,
         }
+        report.trace_rows.append({
+            'platform':'天猫','shop':shop,'period':report.year_month,'order':main,'sub':sub,'sku':sku,
+            'date':trade.get('date') or norm(p(order,'订单创建时间') or p(order,'创建时间') or p(order,'下单时间')),
+            'source':_fname(trade_sf)+'；子订单='+sub,'qty':qty,'sales':sales,'refund':refund,
+            'quantity_note':'虚拟支付或多SKU编码待核' if (sku.isdigit() or any(x in sku for x in (',','，',';','；','、')) or any(x in norm(p(order,'商品名称') or p(order,'宝贝名称')) for x in ('运费补','补运费','差价链接'))) else '商品销售数量',
+        })
         lines.append(line)
         if waybill:
             waybill_groups[waybill].append(len(lines) - 1)
@@ -1081,6 +1101,16 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                               "运营已在资料提交页确认本月无结算")
             report.add_monthly("抖音", shop, 0, 0, 0, 0, 0, ad_fee, 0, 0, other_fee,
                                "运营已确认本月无结算，按0试算")
+            from . import source_audit
+            proof=source_audit.douyin(raw,files,shop,[])
+            if 'ad_fee' in proof:
+                proof['net_receipt']=-proof['ad_fee']-proof['other_fee']
+            else:
+                proof.pop('net_receipt',None)
+            proof.update(platform='抖音',shop=shop,qty=0,sales=0,refund=0,
+                         source='资料清单：当月结算账单已确认无数据',filter='运营显式无结算确认；广告/其他费用仍按原件核对',
+                         receipt_basis='无结算例外：费用后净额，不是银行到账金额')
+            report.source_baselines.append(proof)
             return
         uploaded = [
             _fname(sf) for sf in files
@@ -1248,11 +1278,45 @@ def process_douyin(report: SettlementReport, raw: dict, cost_map: dict[str, dict
                                    "物流运费缺失", "补后续账单或核实运单/API权限后重跑")
         if is_income or is_refund:
             net = income if is_income else -abs(income if income else settle)
+            dates = {norm(p(x,'订单提交时间') or p(x,'下单时间') or p(x,'创建时间')) for x in lines}
+            dates.discard('')
+            report.trace_rows.append({
+                'platform':'抖音','shop':shop,'period':report.year_month,'order':order_id,
+                'sub':norm(p(lines[0],'子订单编号')) if len(lines)==1 else '', 'sku':sku,
+                'date':next(iter(dates)) if len(dates)==1 else '',
+                'source':_fname(settle_sf)+'；订单='+order_id+'；商品='+product_id,
+                'qty':qty if is_income else 0.0,'sales':income if is_income else 0.0,
+                'refund':abs(net) if is_refund else 0.0,
+                'quantity_note':'虚拟支付或多SKU编码待核' if (sku.isdigit() or len(skus)>1 or any(x in sku for x in (',','，',';','；','、'))) else '商品销售数量',
+            })
             report.add_product("抖音", shop, sku, name, qty if is_income else 0.0,
                                abs(qty) if is_refund else 0.0, income if is_income else 0.0,
                                abs(net) if is_refund else 0.0, pf + commission + offsite, 0.0, purchase,
                                tail_for_order, 0.0)
+    refunds_before={key:float(value['refund']) for key,value in report.product.items() if key[:2]==('抖音',shop)}
     report.allocate_public_product_cost("抖音", shop, "refund", sales_discount)
+    baseline_qty=baseline_sales=baseline_refund=0.0
+    for source_row in settle_rows:
+        source_type=norm(p(source_row,'结算单类型'))
+        source_income=money(p(source_row,'收入合计'))
+        source_settle=money(p(source_row,'结算金额'))
+        if source_type=='已结算':
+            baseline_qty+=money(p(source_row,'商品数量'));baseline_sales+=source_income
+        elif '退款' in source_type or source_income<0 or source_settle<0:
+            baseline_refund+=abs(source_income if source_income else source_settle)
+    report.source_baselines.append({'platform':'抖音','shop':shop,'source':_fname(settle_sf),
+                                   'filter':'原件结算单类型已结算/退款；退款另含财务流水销售折扣',
+                                   'qty':baseline_qty,'sales':baseline_sales,'refund':baseline_refund+sales_discount})
+    from . import source_audit
+    report.source_baselines[-1].update(source_audit.douyin(raw,files,shop,settle_rows))
+    if sales_discount:
+        for key,before in refunds_before.items():
+            allocated=mny(float(report.product[key]['refund'])-before)
+            if allocated:
+                report.trace_rows.append({'platform':'抖音','shop':shop,'period':report.year_month,
+                                          'order':'','sub':'','sku':key[2],'date':'',
+                                          'source':'财务流水销售折扣；按SKU净销售分摊，非原订单归属','qty':0,'sales':0,'refund':allocated,
+                                          'quantity_note':'非订单退款调整'})
     report.allocate_public_product_cost("抖音", shop, "ad_fee", ad_fee)
     report.allocate_public_product_cost("抖音", shop, "other", other_fee)
     status = "可作为自动化对比基准" if report.gap_count("抖音", shop, "P0") == 0 else "存在P0缺口-待补后重跑"

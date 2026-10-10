@@ -718,6 +718,15 @@ async def send_finance_card(run_id: str, output: dict | None = None,
     gaps = await ledger.gaps_for_run(run_id)
     platform_output = _with_output_platform(output, platform)
     report_summary = await _platform_report_summary(platform_output, platform)
+    if platform in ('抖音','天猫'):
+        from . import presentation
+        token = _sheet_token_from_url(_link_url(platform_output.get('fields',{}).get('workbook链接')))
+        try:
+            verification = await presentation.preflight(token,platform)
+        except Exception as exc:
+            verification = {'issues':[f'格式验收读取失败：{type(exc).__name__}']}
+        report_summary.setdefault('blocking_issues',[]).extend(verification.get('issues',[]))
+        report_summary['review_url'] = verification.get('review_url','')
     if report_summary.get("blocking_issues"):
         await ledger.update_run(
             run_id,

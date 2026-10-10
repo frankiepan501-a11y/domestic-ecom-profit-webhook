@@ -416,6 +416,8 @@ def finance_confirm_card(output: dict, run: dict, gaps: list[dict], report_summa
         ):
             exceptions.append(_gap_line(gf))
     report_summary = report_summary or {}
+    # A display-only deep link must not change output_id or approval identity.
+    workbook = report_summary.get('review_url') or workbook
     for issue in report_summary.get("blocking_issues") or []:
         open_blockers.append(f"- {platform or '本平台'}：{issue}")
     store_rows = report_summary.get("stores") or []

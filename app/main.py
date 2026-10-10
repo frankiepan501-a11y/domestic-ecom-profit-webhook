@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.4.7"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -16,6 +16,8 @@ class RunRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": APP_VERSION, "task_app": config.TASK_APP_TOKEN,
+            "report_presentation_version": "2026-10-10.v1",
+            "platform_presentation_gate": True,
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
             "report_create_error_detail": True,

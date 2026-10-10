@@ -572,7 +572,7 @@ async def run_profit(
             }
 
         # 4. 创建新表
-        token, sm = await writer.create_report_spreadsheet(year_month)
+        token, sm = await writer.create_report_spreadsheet(year_month, [r[1] for r in settlement.get('monthly_rows',[])])
         url = f"https://u1wpma3xuhr.feishu.cn/sheets/{token}"
         print(f"  报表已建: {url}")
 
@@ -596,6 +596,9 @@ async def run_profit(
                          0, "P3 抖音 / P4 小红书 / P5 京东"])
         await writer.write_result_sheets(token, sm, year_month, result, extra_alerts=extra)
         await writer.write_settlement_sheets(token, sm, settlement)
+        # Presentation is separate from accounting; only this NEW workbook is changed.
+        from . import presentation
+        await presentation.publish(token, sm, settlement, year_month)
 
         # 5. 回填
         finished_ms = int(datetime.now().timestamp() * 1000)
