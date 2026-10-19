@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.7"
+APP_VERSION = "0.4.8"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -18,6 +18,7 @@ async def health():
     return {"status": "ok", "version": APP_VERSION, "task_app": config.TASK_APP_TOKEN,
             "report_presentation_version": "2026-10-10.v1",
             "platform_presentation_gate": True,
+            "tmall_makeup_version": "2026-10-19.v1",
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
             "report_create_error_detail": True,
@@ -35,6 +36,34 @@ def _check_auth(authorization: str | None):
         raise HTTPException(401, "missing bearer")
     if authorization[7:] != config.WEBHOOK_BEARER_TOKEN:
         raise HTTPException(401, "invalid bearer")
+
+
+class MakeupCheckRequest(BaseModel):
+    period: str
+    shops: dict[str, dict]
+
+
+@app.post("/profit/makeup-check")
+async def makeup_check(req: MakeupCheckRequest, authorization: str | None = Header(None)):
+    """Read-only deployment check: live register + supplied official settlement groups.
+
+    Does not create reports, audit states, cards, or update the register.
+    """
+    _check_auth(authorization)
+    from . import makeup
+    records = await makeup.load_records()
+    result = {}
+    for shop, groups in req.shops.items():
+        if shop not in ("天猫宝空", "天猫纷岚"):
+            raise HTTPException(400, "仅限天猫店铺")
+        matched = makeup.prepare(records, shop, groups, req.period)
+        waiting = makeup.pending(records, shop, groups, req.period)
+        result[shop] = {"matched":len(matched),
+                        "principal":round(sum(x["principal"] for x in matched.values()),2),
+                        "commission":round(sum(x["commission"] for x in matched.values()),2),
+                        "pending_count":len(waiting),
+                        "pending_commission":round(sum(x["commission"] for x in waiting),2)}
+    return {"version":makeup.VERSION,"read_only":True,"shops":result}
 
 
 @app.post("/profit/run")

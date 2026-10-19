@@ -554,7 +554,7 @@ class SettlementReport:
                 fee = platform_alloc[i]
                 ad = ad_alloc[i]
                 gross = mny(net - fee - ad - purchase - tail - other)
-                receipt = mny(net - fee - ad - other)
+                receipt = mny(net - fee - ad - (0 if sku == "非商品-补单" else other))
                 shop_rows.append([
                     shop, self.year_month, sku, product["name"], mny(product["qty"]),
                     mny(product["refund_qty"]), mny(sum(float(c[6]) for c in costs)),
@@ -642,7 +642,7 @@ def cost_entry(cost_map: dict[str, dict[str, Any]], sku: str) -> tuple[float, st
     )
 
 
-def build_bill_pool(raw: dict) -> dict[str, dict[str, Any]]:
+def build_bill_pool(raw: dict, include_zto_returns: bool = False) -> dict[str, dict[str, Any]]:
     pool: dict[str, dict[str, Any]] = {}
     seen_bill_files: set[str] = set()
     for sf in raw.get("source_files", []):
@@ -680,6 +680,17 @@ def build_bill_pool(raw: dict) -> dict[str, dict[str, Any]]:
                     "sheet": "Sheet1", "date": norm(p(r, "账单日期")), "source": "月结账单",
                 })
                 item["amount"] += money(p(r, "合计"))
+            if include_zto_returns:
+                # A missing Sheet2 falls back to Sheet1 in sheet_rows; require
+                # its distinct fee header and type to avoid double counting.
+                for r in sheet_rows(buf, fname, "Sheet2", header_row=1, key_col=2):
+                    wb = norm(p(r, "运单号"))
+                    if not wb or norm(p(r, "结算类型")) != "退件费":
+                        continue
+                    item = pool.setdefault(wb, {"waybill": wb, "carrier": "中通", "amount": 0.0,
+                        "file": fname, "sheet": "Sheet2", "date": norm(p(r,"结算时间")), "source": "月结账单"})
+                    item["amount"] += money(p(r, "向下应结总金额"))
+                    if "Sheet2" not in item["sheet"]: item["sheet"] += "+Sheet2退件费"
         elif "logistics" in low:
             continue
     for row in raw.get("logistics", []):
@@ -809,7 +820,7 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
     # Prefer shop-scoped logistics where present. Some operators upload the
     # carrier month bills only once in the global company slot, so miss in the
     # shop pool must fall back to the global pool passed by compute().
-    shop_bill_pool = build_bill_pool({"source_files": files, "logistics": []})
+    shop_bill_pool = build_bill_pool({"source_files": files, "logistics": []}, include_zto_returns=True)
     trade_sf = _pick_file(files, "交易货款") or _pick_file(files, "平台结算账单")
     if not trade_sf:
         report.add_gap("P0", "天猫", shop, "资料缺口", shop, "未找到交易货款结算文件", "无法计算天猫结算月收入",
@@ -868,12 +879,28 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
         if sales > 0:
             entry["qty"] += money(p(r, "数量"))
 
+    from . import makeup
+    if "makeup_records" not in raw:
+        # Direct offline calls retain legacy fixtures; production runner always
+        # supplies the live register. Missing register is not silently swallowed.
+        makeup_orders = {}
+    else:
+        makeup_orders = makeup.prepare(raw["makeup_records"], shop, grouped, report.year_month)
+    for pending in makeup.pending(raw.get("makeup_records", []), shop, grouped, report.year_month):
+        report.add_asset("天猫", shop, "补单登记台/"+pending["record_id"], "补单未结算佣金待结转",
+                         pending["order"], pending["commission"], "佣金", "未匹配本期官方结算；不预设归属月，不扣本期")
+    makeup_total = sum(x["principal"] + x["commission"] for x in makeup_orders.values())
+    for oid, item in makeup_orders.items():
+        for category, key in (("补单订单款净支出", "principal"), ("补单佣金", "commission")):
+            report.add_fee("天猫", shop, "补单登记台/"+item["record_id"], category, oid,
+                           item[key], key, "随本订单结算月份计一次；返现非第二笔付款")
     lines: list[dict[str, Any]] = []
     waybill_groups: dict[str, list[int]] = defaultdict(list)
     for trade in grouped.values():
         sub = trade["sub"]
         order = order_by_sub.get(sub)
         main = trade["main"]
+        card_only = makeup_orders.get(main, {}).get("card_only", False)
         sku = norm(p(order, "商家编码") or p(order, "外部系统编号"))
         qty = trade["qty"]
         sales = trade["sales"]
@@ -885,38 +912,40 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
         full_refund = refund_scope == "全额退款" or (sales > 0 and refund >= sales)
         return_status = (raw.get("tmall_cost_return_status") or {}).get(sub, "")
         confirmed_return = return_status in {"已退货入库", "已退回签收", "未发货取消"}
-        if full_refund and not confirmed_return:
+        if full_refund and not confirmed_return and not card_only:
             report.add_gap("P0", "天猫", shop, "采购成本", sub,
                            "全额退款但无退货入库或未发货取消凭证",
                            "不能确认是否扣减整件采购成本", "补售后退货入库/取消凭证后重跑")
         full_refund_qty = qty if full_refund and confirmed_return else 0.0
-        cost_qty = max(qty - full_refund_qty, 0.0)
+        cost_qty = 0.0 if card_only else max(qty - full_refund_qty, 0.0)
         unit, cost_src, cost_name = cost_entry(cost_map, sku)
         name = erp_display_name(sku, cost_name)
         purchase = cost_qty * unit
-        if sales <= 0 and refund > 0:
+        if sales <= 0 and refund > 0 and not card_only:
             report.add_gap("P0", "天猫", shop, "采购成本", sub,
                            "当月只有退款、没有原销售行，无法确定应冲回的采购成本件数",
                            "采购成本待核对", "补原销售订单及全额/部分退款凭证")
-        if not sku:
+        if not sku and not card_only:
             report.add_gap("P0", "天猫", shop, "采购成本", main, "订单无法取得商家编码/外部系统编号",
                            "无法映射采购成本", "补订单明细商家编码或SKU对照表")
         elif cost_qty > 0 and unit <= 0:
             report.add_gap("P0", "天猫", shop, "采购成本", sku, "采购成本表未匹配或成本为0",
                            "毛利会虚高", "维护产品采购成本台后重跑")
+        if card_only:
+            unit, cost_src = 0.0, "补单登记台确认空包卡片；卡片包装暂不计"
         report.add_cost("天猫", shop, main, sku, name, cost_qty, unit, purchase, cost_src)
         waybill = norm(p(order, "物流单号")).removeprefix("No:")
         carrier = norm(p(order, "物流公司"))
         line = {
-            "order": main, "sub": sub, "sku": sku, "name": name, "qty": qty,
+            "order": main, "sub": sub, "sku": sku, "name": name, "qty": 0.0 if card_only else qty, "makeup_qty": qty if card_only else 0.0,
             "refund_qty": refund_qty, "sales": sales, "refund": refund,
             "purchase": purchase, "waybill": waybill, "carrier": carrier, "tail": 0.0,
         }
         report.trace_rows.append({
             'platform':'天猫','shop':shop,'period':report.year_month,'order':main,'sub':sub,'sku':sku,
             'date':trade.get('date') or norm(p(order,'订单创建时间') or p(order,'创建时间') or p(order,'下单时间')),
-            'source':_fname(trade_sf)+'；子订单='+sub,'qty':qty,'sales':sales,'refund':refund,
-            'quantity_note':'虚拟支付或多SKU编码待核' if (sku.isdigit() or any(x in sku for x in (',','，',';','；','、')) or any(x in norm(p(order,'商品名称') or p(order,'宝贝名称')) for x in ('运费补','补运费','差价链接'))) else '商品销售数量',
+            'source':_fname(trade_sf)+'；子订单='+sub,'qty':0.0 if card_only else qty,'official_qty':qty,'sales':sales,'refund':refund,
+            'quantity_note':'补单空包卡片（实物0）' if card_only else '虚拟支付或多SKU编码待核' if (sku.isdigit() or any(x in sku for x in (',','，',';','；','、')) or any(x in norm(p(order,'商品名称') or p(order,'宝贝名称')) for x in ('运费补','补运费','差价链接'))) else '商品销售数量',
         })
         lines.append(line)
         if waybill:
@@ -957,9 +986,15 @@ def process_tmall(report: SettlementReport, raw: dict, cost_map: dict[str, dict[
                            float(line["refund_qty"]), float(line["sales"]), float(line["refund"]),
                            platform_fee * ratio, ad_fee * ratio, float(line["purchase"]),
                            float(line["tail"]), 0.0)
+    if makeup_total:
+        report.add_product("天猫", shop, "非商品-补单", "补单订单款净支出及佣金", 0, 0, 0, 0, 0, 0, 0, 0, makeup_total)
+    report.source_baselines[-1]["makeup_other"] = makeup_total
+    report.source_baselines[-1]["makeup_qty"] = sum(x["makeup_qty"] for x in lines)
+    report.source_baselines[-1]["makeup_proof"] = "补单登记台逐订单匹配官方结算；本金与佣金仅一次；" + ";".join(x["record_id"] for x in makeup_orders.values())
     status = "可作为自动化对比基准" if report.gap_count("天猫", shop, "P0") == 0 else "存在P0缺口-待补后重跑"
     report.add_monthly("天猫", shop, len(lines), qty_total, sales_total, refund_total, platform_fee,
-                       ad_fee, purchase_total, tail_total, 0.0, status)
+                       ad_fee, purchase_total, tail_total, makeup_total, status,
+                       payback_override=net_total-platform_fee-ad_fee)
 
 
 def add_dy_index(target: dict[str, list[dict[str, Any]]], key: str, row: dict[str, Any]) -> None:
@@ -1542,8 +1577,9 @@ def process_jd(report: SettlementReport, raw: dict, shop: str) -> None:
 def compute(raw: dict, cost_map: dict[str, dict[str, Any]], year_month: str) -> dict[str, Any]:
     report = SettlementReport(year_month)
     bill_pool = build_bill_pool(raw)
+    tmall_bill_pool = build_bill_pool(raw, include_zto_returns=True)
     for shop in ("天猫纷岚", "天猫宝空"):
-        process_tmall(report, raw, cost_map, bill_pool, shop)
+        process_tmall(report, raw, cost_map, tmall_bill_pool, shop)
     for shop in ("抖音宝空", "抖音纷岚"):
         process_douyin(report, raw, cost_map, bill_pool, shop)
     for shop in ("小红书宝空", "小红书纷岚"):

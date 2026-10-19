@@ -65,7 +65,7 @@ def build(data, period):
                 issues.append(f"{row['shop']}/{row.get('sub') or row.get('order')} 缺可核的下单日期")
             if row.get('period') != period:
                 issues.append(f"{row['shop']} 明细结算月份不一致")
-            if row.get('quantity_note') != '商品销售数量' and not adjustment:
+            if row.get('quantity_note') not in ('商品销售数量','补单空包卡片（实物0）') and not adjustment:
                 issues.append(f"{row['shop']}/{row.get('order')} 数量性质待核：{row.get('quantity_note')}")
             details.append([platform,row['shop'],period,order_month or '待核',str(row.get('date') or ''),
                             row.get('order',''),row.get('sub',''),row.get('sku',''),row.get('qty',0),
@@ -115,7 +115,10 @@ def build(data, period):
                     if field not in b:
                         issues.append(f'{shop} 缺独立原件对照：{label}')
                     else:
-                        compare(shop,'官方原件/'+label,m[idx],b[field],b['source']+'；'+b['filter']+'；'+b.get('fee_proof','')+'；'+b.get('receipt_basis',''))
+                        expected=number(b[field])
+                        if field=='qty':expected-=number(b.get('makeup_qty'))
+                        if field=='other_fee':expected+=number(b.get('makeup_other'))
+                        compare(shop,'官方原件/'+label,m[idx],expected,b['source']+'；'+b['filter']+'；'+b.get('fee_proof','')+'；'+b.get('receipt_basis','')+'；'+b.get('makeup_proof',''))
             if number(m[17])>0:
                 issues.append(f'{shop} 仍有P0缺口')
 

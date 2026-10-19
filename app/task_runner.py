@@ -486,6 +486,9 @@ async def run_profit(
         result = engine.compute(raw["orders"], raw["refunds"], raw["plat_fees"],
                                 raw["ads"], raw["logistics"], sku_costs, sku_names,
                                 year_month=year_month)
+        from . import makeup
+        if any(settlement_engine._files(raw, "天猫", shop) for shop in ("天猫纷岚", "天猫宝空")):
+            raw["makeup_records"] = await makeup.load_records()
         settlement = settlement_engine.compute(raw, cost_map, year_month)
         await sync_settlement_p0_gaps(year_month, settlement)
         settlement_cost_gap_count = sum(
