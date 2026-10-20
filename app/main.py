@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.8"
+APP_VERSION = "0.4.9"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -19,6 +19,7 @@ async def health():
             "report_presentation_version": "2026-10-10.v1",
             "platform_presentation_gate": True,
             "tmall_makeup_version": "2026-10-19.v1",
+            "tmall_makeup_difference_reminder": "2026-10-20.v1",
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
             "report_create_error_detail": True,
@@ -41,6 +42,15 @@ def _check_auth(authorization: str | None):
 class MakeupCheckRequest(BaseModel):
     period: str
     shops: dict[str, dict]
+
+
+@app.post("/profit/makeup-difference-remind")
+async def makeup_difference_remind(dry_run: bool = True,
+                                   authorization: str | None = Header(None)):
+    """Daily Tmall difference check; default is read-only preview."""
+    _check_auth(authorization)
+    from . import makeup_alert
+    return await makeup_alert.run(dry_run=dry_run)
 
 
 @app.post("/profit/makeup-check")
