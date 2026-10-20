@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import makeup_alert
+from app import makeup_alert, settlement_engine
+
+
+def official(*orders):
+    return {('天猫纷岚', order): amount for order, amount in orders}
 
 
 def row(order='3317044944002077875', plan=219, actual=169, received=0, **kwargs):
@@ -41,7 +45,7 @@ class DifferenceAlertTest(unittest.TestCase):
         with patch.object(makeup_alert.makeup,'load_records',new=AsyncMock(return_value=[row(),row(order='2',received=50),row(order='3',actual=None)])), \
              patch.object(makeup_alert,'_send',new=AsyncMock()) as send, \
              patch.object(makeup_alert,'_save_marker',new=AsyncMock()) as save:
-            result=asyncio.run(makeup_alert.run(dry_run=True))
+            result=asyncio.run(makeup_alert.run(dry_run=True,official_orders=official(('3317044944002077875',169),('2',169),('3',169))))
         self.assertEqual((result['open'],result['cleared'],result['missing_amount']), (1,1,1))
         send.assert_not_called();save.assert_not_called()
 
@@ -53,13 +57,13 @@ class DifferenceAlertTest(unittest.TestCase):
         with patch.object(makeup_alert.makeup,'load_records',new=AsyncMock(return_value=[source])), \
              patch.object(makeup_alert,'_send',new=AsyncMock(side_effect=['om_ops','om_fin'])) as send, \
              patch.object(makeup_alert,'_save_marker',new=save):
-            result=asyncio.run(makeup_alert.run(dry_run=False))
+            result=asyncio.run(makeup_alert.run(dry_run=False,official_orders=official(('3317044944002077875',169))))
         self.assertEqual(result['sent'],2)
         self.assertEqual(list(saved[-1]),['ops','finance'])
         source['fields'][makeup_alert.MARKER_FIELD]=json.dumps(saved[-1])
         with patch.object(makeup_alert.makeup,'load_records',new=AsyncMock(return_value=[source])), \
              patch.object(makeup_alert,'_send',new=AsyncMock()) as second_send:
-            result=asyncio.run(makeup_alert.run(dry_run=False))
+            result=asyncio.run(makeup_alert.run(dry_run=False,official_orders=official(('3317044944002077875',169))))
         self.assertEqual(result['sent'],0)
         second_send.assert_not_called()
 
@@ -78,5 +82,28 @@ class DifferenceAlertTest(unittest.TestCase):
         with patch.object(makeup_alert.makeup,'load_records',new=AsyncMock(return_value=[row(),duplicate])), \
              patch.object(makeup_alert,'_send',new=AsyncMock()) as send:
             with self.assertRaisesRegex(ValueError,'订单重复'):
-                asyncio.run(makeup_alert.run(dry_run=False))
+                asyncio.run(makeup_alert.run(dry_run=False,official_orders=official(('3317044944002077875',169))))
         send.assert_not_called()
+
+    def test_requires_current_month_official_scope(self):
+        with patch.object(makeup_alert,'_send',new=AsyncMock()) as send:
+            with self.assertRaisesRegex(ValueError,'官方结算订单'):
+                asyncio.run(makeup_alert.run(dry_run=False,records=[row()]))
+            result=asyncio.run(makeup_alert.run(dry_run=False,records=[row()],official_orders={}))
+        self.assertEqual((result['scanned'],result['sent']),(0,0))
+        send.assert_not_called()
+
+    def test_official_amount_mismatch_blocks_chase(self):
+        with patch.object(makeup_alert,'_send',new=AsyncMock()) as send:
+            result=asyncio.run(makeup_alert.run(dry_run=False,records=[row()],
+                                official_orders=official(('3317044944002077875',168))))
+        self.assertEqual(result['official_amount_mismatch'],['3317044944002077875'])
+        self.assertEqual(result['sent'],0)
+        send.assert_not_called()
+
+    def test_report_scope_comes_from_current_official_settlement_file(self):
+        csv_text='订单号,订单实际金额（元）,退款金额（元）\n3317044944002077875,100,0\n3317044944002077875,69,0\nother,0,50\n'
+        raw={'source_files':[{'platform':'天猫','shop':'天猫纷岚',
+             'fname':'2026-09-交易货款.csv','buf':csv_text.encode('gb18030')}]}
+        amounts=settlement_engine.tmall_settled_order_amounts(raw)
+        self.assertEqual(amounts,official(('3317044944002077875',169)))

@@ -59,6 +59,7 @@ def evaluate(record):
     due = plan - actual - received
     if due == 0:
         return {'record_id':record['record_id'], 'status':'cleared',
+                'shop':shop,'order':order,'actual':actual,
                 'marker':_marker(f.get(MARKER_FIELD))}
     owner = makeup.text(f.get('运营负责人'))
     if owner and owner != '吴家浩':
@@ -111,26 +112,45 @@ async def _send(item, target):
     return result['data']['message_id']
 
 
-async def run(dry_run=True):
-    records = await makeup.load_records()
-    seen_orders = set()
+def _shop(value):
+    value = makeup.text(value)
+    if '纷岚' in value:
+        return '天猫纷岚'
+    if '宝空' in value or 'powkong' in value.lower():
+        return '天猫宝空'
+    return ''
+
+
+async def run(dry_run=True, *, records=None, official_orders=None):
+    """Audit only orders in the current report's official settlement export."""
+    if official_orders is None:
+        raise ValueError('必须提供本次天猫月报的官方结算订单，禁止全表定时催款')
+    if records is None:
+        records = await makeup.load_records()
+    scoped = []
     for record in records:
+        f = record.get('fields', {})
+        key = (_shop(f.get('店铺')), makeup.text(f.get('订单号')))
+        if makeup.text(f.get('平台')) == '天猫' and key in official_orders:
+            scoped.append(record)
+    seen_orders = set()
+    for record in scoped:
         f = record.get('fields', {})
         if makeup.text(f.get('平台')) != '天猫':
             continue
         order = makeup.text(f.get('订单号'))
-        shop = makeup.text(f.get('店铺'))
+        shop = _shop(f.get('店铺'))
         if not order or makeup.text(f.get('执行阶段')) == '已取消':
             continue
         key = (shop, order)
         if key in seen_orders:
             raise ValueError(f'补单订单重复，暂停差额提醒：{shop}/{order}')
         seen_orders.add(key)
-    result = {'mode':'dry_run' if dry_run else 'send','scanned':len(records),
+    result = {'mode':'dry_run' if dry_run else 'send','scanned':len(scoped),
               'open':0,'sent':0,'already_reminded':0,'cleared':0,'missing_amount':0,
               'owner_mismatch':[],'invalid_received':[],'unverified_actual':[],
-              'candidates':[]}
-    for record in records:
+              'official_amount_mismatch':[],'candidates':[]}
+    for record in scoped:
         item = evaluate(record)
         if item is None:
             f = record.get('fields',{})
@@ -145,6 +165,11 @@ async def run(dry_run=True):
             continue
         if item['status'] == 'unverified_actual':
             result['unverified_actual'].append(item['order'])
+            continue
+        key = (_shop(item['shop']), item['order'])
+        official_amount = _money(official_orders[key])
+        if official_amount is None or official_amount != item['actual']:
+            result['official_amount_mismatch'].append(item['order'])
             continue
         if item['status'] == 'cleared':
             result['cleared'] += 1

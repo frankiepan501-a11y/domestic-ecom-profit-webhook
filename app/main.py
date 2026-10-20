@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.10"
+APP_VERSION = "0.4.11"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -19,7 +19,7 @@ async def health():
             "report_presentation_version": "2026-10-10.v1",
             "platform_presentation_gate": True,
             "tmall_makeup_version": "2026-10-19.v1",
-            "tmall_makeup_difference_reminder": "2026-10-20.v1",
+            "tmall_makeup_difference_reminder": "2026-10-20.monthly-audit.v2",
             "tmall_makeup_alert_duplicate_guard": True,
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
@@ -48,10 +48,9 @@ class MakeupCheckRequest(BaseModel):
 @app.post("/profit/makeup-difference-remind")
 async def makeup_difference_remind(dry_run: bool = True,
                                    authorization: str | None = Header(None)):
-    """Daily Tmall difference check; default is read-only preview."""
+    """Retired stand-alone reminder; audit is attached to monthly report generation."""
     _check_auth(authorization)
-    from . import makeup_alert
-    return await makeup_alert.run(dry_run=dry_run)
+    raise HTTPException(410, "独立差额提醒已停用；请在天猫月报官方结算审计中触发")
 
 
 @app.post("/profit/makeup-check")

@@ -277,6 +277,24 @@ def _pick_file(files: list[dict[str, Any]], *keywords: str) -> dict[str, Any] | 
     return None
 
 
+def tmall_settled_order_amounts(raw: dict) -> dict[tuple[str, str], float]:
+    """Current report's official Tmall settlement sales, keyed by shop and main order."""
+    out: dict[tuple[str, str], float] = {}
+    for shop in ("天猫纷岚", "天猫宝空"):
+        trade = _pick_file(_files(raw, "天猫", shop), "交易货款") or _pick_file(
+            _files(raw, "天猫", shop), "平台结算账单"
+        )
+        if not trade:
+            continue
+        for row in read_csv(trade.get("buf") or b"", prefer_gbk=True):
+            order = norm(p(row, "订单号"))
+            sales = money(p(row, "订单实际金额（元）"))
+            if order and sales > 0:
+                key = (shop, order)
+                out[key] = out.get(key, 0.0) + sales
+    return out
+
+
 def _matching_files(files: list[dict[str, Any]], *keywords: str) -> list[dict[str, Any]]:
     out = []
     for sf in sorted(files, key=lambda x: _fname(x)):
