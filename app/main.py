@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.9"
+APP_VERSION = "0.4.10"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 
@@ -20,6 +20,7 @@ async def health():
             "platform_presentation_gate": True,
             "tmall_makeup_version": "2026-10-19.v1",
             "tmall_makeup_difference_reminder": "2026-10-20.v1",
+            "tmall_makeup_alert_duplicate_guard": True,
             "ledger_run_table": config.LEDGER_RUN_TABLE_ID,
             "cost_gap_responsibility_routing": True,
             "report_create_error_detail": True,
