@@ -69,7 +69,8 @@ def evaluate(record):
         f'{record["record_id"]}|{order}|{plan}|{actual}|{received}|{due}|{kind}'.encode()
     ).hexdigest()[:24]
     return {'record_id':record['record_id'], 'status':'open', 'shop':shop,
-            'order':order, 'plan':plan, 'actual':actual, 'received':received,
+            'order':order, 'plan_no':makeup.text(f.get('计划编号')),
+            'plan':plan, 'actual':actual, 'received':received,
             'due':due, 'kind':kind, 'fingerprint':fingerprint,
             'marker':_marker(f.get(MARKER_FIELD))}
 
@@ -81,7 +82,8 @@ def message(item, target):
               if due > 0 else
               '实际订单金额高于计划垫款，或已到账金额超过应追回额。请财务确认是否补付或更正到账记录，运营协助核原单。')
     prefix = '阿浩，请处理这笔补单差额。' if target == 'ops' else '请财务核实这笔补单差额及到账状态。'
-    return (f'{head}\n{prefix}\n店铺：{item["shop"]}\n订单号：{item["order"]}\n'
+    plan_no = f'计划编号：{item["plan_no"]}\n' if item['plan_no'] else ''
+    return (f'{head}\n{prefix}\n店铺：{item["shop"]}\n{plan_no}订单号：{item["order"]}\n'
             f'计划已垫：{item["plan"]:.2f} 元；官方实际：{item["actual"]:.2f} 元；'
             f'财务已收差额：{item["received"]:.2f} 元\n'
             f'当前差额：{due:+.2f} 元。{action}\n'
