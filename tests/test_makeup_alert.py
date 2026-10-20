@@ -25,6 +25,19 @@ def row(order='3317044944002077875', plan=219, actual=169, received=0, **kwargs)
 
 
 class DifferenceAlertTest(unittest.TestCase):
+    def test_recipient_chats_use_chat_id(self):
+        async def check():
+            with patch.object(makeup_alert.feishu,'_req',new=AsyncMock(
+                return_value={'code':0,'data':{'message_id':'om_test'}})) as request:
+                item=makeup_alert.evaluate(row())
+                await makeup_alert._send(item,'ops')
+                await makeup_alert._send(item,'finance')
+                self.assertEqual([call.kwargs['params']['receive_id_type'] for call in request.call_args_list],
+                                 ['chat_id','chat_id'])
+                self.assertEqual([call.kwargs['json']['receive_id'] for call in request.call_args_list],
+                                 [makeup_alert.OPS_CHAT,makeup_alert.FINANCE_CHAT])
+        asyncio.run(check())
+
     def test_only_known_executed_difference(self):
         self.assertEqual(makeup_alert.evaluate(row())['due'],50)
         self.assertEqual(makeup_alert.evaluate(row(received=50))['status'],'cleared')

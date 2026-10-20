@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from . import feishu, makeup, config
 
 MARKER_FIELD = '差额提醒记录（系统）'
-OPS_OPEN_ID = 'ou_37ac0a6f7a0d69f9f14238cffdff78f7'  # 吴家浩，聪哥1号 namespace
+OPS_CHAT = config.MAKEUP_OPS_CHAT_ID  # 吴家浩私聊，会话 ID；由聪哥1号发送
 FINANCE_CHAT = config.FINANCE_CONFIRM_CHAT_ID
 BASE_URL = f'https://u1wpma3xuhr.feishu.cn/base/{makeup.APP}?table={makeup.TABLE}'
 
@@ -100,8 +100,8 @@ async def _save_marker(record_id, marker):
 
 
 async def _send(item, target):
-    recipient = OPS_OPEN_ID if target == 'ops' else FINANCE_CHAT
-    id_type = 'open_id' if target == 'ops' else 'chat_id'
+    recipient = OPS_CHAT if target == 'ops' else FINANCE_CHAT
+    id_type = 'chat_id'
     key = str(uuid.uuid5(uuid.NAMESPACE_URL,
                         f'makeup-difference|{item["record_id"]}|{item["fingerprint"]}|{target}'))
     result = await feishu._req('POST','/open-apis/im/v1/messages',
