@@ -277,21 +277,38 @@ def _pick_file(files: list[dict[str, Any]], *keywords: str) -> dict[str, Any] | 
     return None
 
 
-def tmall_settled_order_amounts(raw: dict) -> dict[tuple[str, str], float]:
-    """Current report's official Tmall settlement sales, keyed by shop and main order."""
-    out: dict[tuple[str, str], float] = {}
+def tmall_makeup_audit_orders(raw: dict) -> dict[tuple[str, str], float | None]:
+    """Settlement selects the cohort; official order detail supplies buyer-paid amount."""
+    out: dict[tuple[str, str], float | None] = {}
     for shop in ("天猫纷岚", "天猫宝空"):
-        trade = _pick_file(_files(raw, "天猫", shop), "交易货款") or _pick_file(
-            _files(raw, "天猫", shop), "平台结算账单"
-        )
+        files = _files(raw, "天猫", shop)
+        trade = _pick_file(files, "交易货款") or _pick_file(files, "平台结算账单")
         if not trade:
             continue
+        settled = set()
         for row in read_csv(trade.get("buf") or b"", prefer_gbk=True):
             order = norm(p(row, "订单号"))
             sales = money(p(row, "订单实际金额（元）"))
             if order and sales > 0:
-                key = (shop, order)
-                out[key] = out.get(key, 0.0) + sales
+                settled.add(order)
+        by_order: dict[str, dict[str, float]] = defaultdict(dict)
+        for sf in files:
+            filename = _fname(sf)
+            if "订单详细" not in filename and "订单明细" not in filename:
+                continue
+            rows = sheet_rows(sf.get("buf") or b"", filename, "export") or sheet_rows(
+                sf.get("buf") or b"", filename
+            )
+            for row in rows:
+                order = norm(p(row, "订单编号") or p(row, "订单号"))
+                if order not in settled or p(row, "买家实付金额") == "":
+                    continue
+                source = by_order[order]
+                source[filename] = source.get(filename, 0.0) + money(p(row, "买家实付金额"))
+        for order in settled:
+            sources = by_order.get(order, {})
+            amounts = {mny(value) for value in sources.values() if value > 0}
+            out[(shop, order)] = amounts.pop() if len(amounts) == 1 else None
     return out
 
 

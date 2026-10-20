@@ -489,7 +489,7 @@ async def run_profit(
         from . import makeup, makeup_alert
         if any(settlement_engine._files(raw, "天猫", shop) for shop in ("天猫纷岚", "天猫宝空")):
             raw["makeup_records"] = await makeup.load_records()
-            official_orders = settlement_engine.tmall_settled_order_amounts(raw)
+            official_orders = settlement_engine.tmall_makeup_audit_orders(raw)
             audit = await makeup_alert.run(
                 dry_run=notifications_suppressed,
                 records=raw["makeup_records"],

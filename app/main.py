@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from . import config, task_runner, feishu
 
-APP_VERSION = "0.4.11"
+APP_VERSION = "0.4.12"
 app = FastAPI(title="domestic-ecom-profit", version=APP_VERSION)
 
 

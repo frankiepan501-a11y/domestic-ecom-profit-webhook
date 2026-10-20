@@ -1,9 +1,11 @@
 import asyncio
 import json
+import io
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+import openpyxl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import makeup_alert, settlement_engine
@@ -101,9 +103,16 @@ class DifferenceAlertTest(unittest.TestCase):
         self.assertEqual(result['sent'],0)
         send.assert_not_called()
 
-    def test_report_scope_comes_from_current_official_settlement_file(self):
-        csv_text='订单号,订单实际金额（元）,退款金额（元）\n3317044944002077875,100,0\n3317044944002077875,69,0\nother,0,50\n'
+    def test_report_scope_uses_settlement_but_amount_uses_order_detail(self):
+        csv_text='订单号,订单实际金额（元）,退款金额（元）\n3317044944002077875,150,0\nother,0,50\n'
+        book=openpyxl.Workbook()
+        sheet=book.active;sheet.title='export'
+        sheet.append(['订单编号','买家实付金额'])
+        sheet.append(['3317044944002077875',100])
+        sheet.append(['3317044944002077875',69])
+        buf=io.BytesIO();book.save(buf)
         raw={'source_files':[{'platform':'天猫','shop':'天猫纷岚',
-             'fname':'2026-09-交易货款.csv','buf':csv_text.encode('gb18030')}]}
-        amounts=settlement_engine.tmall_settled_order_amounts(raw)
+             'fname':'2026-09-交易货款.csv','buf':csv_text.encode('gb18030')},
+             {'platform':'天猫','shop':'天猫纷岚','fname':'9月订单详细.xlsx','buf':buf.getvalue()}]}
+        amounts=settlement_engine.tmall_makeup_audit_orders(raw)
         self.assertEqual(amounts,official(('3317044944002077875',169)))
