@@ -113,6 +113,19 @@ async def _send(item, target):
 
 async def run(dry_run=True):
     records = await makeup.load_records()
+    seen_orders = set()
+    for record in records:
+        f = record.get('fields', {})
+        if makeup.text(f.get('平台')) != '天猫':
+            continue
+        order = makeup.text(f.get('订单号'))
+        shop = makeup.text(f.get('店铺'))
+        if not order or makeup.text(f.get('执行阶段')) == '已取消':
+            continue
+        key = (shop, order)
+        if key in seen_orders:
+            raise ValueError(f'补单订单重复，暂停差额提醒：{shop}/{order}')
+        seen_orders.add(key)
     result = {'mode':'dry_run' if dry_run else 'send','scanned':len(records),
               'open':0,'sent':0,'already_reminded':0,'cleared':0,'missing_amount':0,
               'owner_mismatch':[],'invalid_received':[],'unverified_actual':[],

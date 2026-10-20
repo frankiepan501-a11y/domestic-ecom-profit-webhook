@@ -71,3 +71,12 @@ class DifferenceAlertTest(unittest.TestCase):
         cleared=makeup_alert.evaluate(row(received=50,**{makeup_alert.MARKER_FIELD:json.dumps(previous)}))
         self.assertEqual(cleared['status'],'cleared')
         self.assertTrue(cleared['marker'])
+
+    def test_duplicate_order_blocks_before_sending(self):
+        duplicate=row()
+        duplicate['record_id']='rec-duplicate'
+        with patch.object(makeup_alert.makeup,'load_records',new=AsyncMock(return_value=[row(),duplicate])), \
+             patch.object(makeup_alert,'_send',new=AsyncMock()) as send:
+            with self.assertRaisesRegex(ValueError,'订单重复'):
+                asyncio.run(makeup_alert.run(dry_run=False))
+        send.assert_not_called()
